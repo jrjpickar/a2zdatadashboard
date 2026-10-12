@@ -1,8 +1,8 @@
-# A2Z Operations Dashboard (KPI) 1.0
+# A2Z Operations Dashboard (KPI) 1.1
 
 KPI dashboard for A2Z, built like the LCP Dial Intelligence dashboard: Today / WTD / MTD / YTD in Pacific time, a rep filter, Data Quality, A2Z's orange GHL theme, embedded in GHL as a Custom Page.
 
-**Tabs:** Overview · Leads (speed to lead, inbound calls, action queue) · Estimates (turnaround, win rate by service / customer type / source, pipeline, lost reasons) · Containers · Jobs & Trucks · Crews · Hiring · Money (owners only) · Data Quality.
+**Tabs:** Overview · Leads (speed to lead, inbound calls, action queue) · Estimates (turnaround, win rate by service / customer type / source, pipeline, lost reasons) · Containers · Jobs & Trucks · Crews · Hiring · Money (admins) · Data Quality · Users (admins). Leads tab opens with a lead funnel shaped like the LCP acquisition funnel.
 
 **Sources** (each synced into Netlify Blobs every ~30 min, or on Refresh live data):
 

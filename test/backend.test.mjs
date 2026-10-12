@@ -5,7 +5,8 @@ import { useMemoryStore, KEYS } from '../lib/store.mjs';
 import { runSync, withSyncLock, mergeWebhookEvents } from '../lib/sync.mjs';
 import { trackStages, trackHires, slimContact, findContactTypeField, phoneKey } from '../lib/normalize.mjs';
 import { inboundCalls } from '../lib/twilio.mjs';
-import { decryptGhlUserData, signSession, verifySession, roleFor } from '../lib/auth.mjs';
+import { decryptGhlUserData, signSession, verifySession, roleFor, requireSession } from '../lib/auth.mjs';
+import { applyChange, roleOf, _resetAccessCache } from '../lib/access.mjs';
 import { config, cleanSettings } from '../lib/config.mjs';
 import { forViewer } from '../netlify/functions/dashboard-data.mjs';
 import { parseStageHook } from '../netlify/functions/ghl-webhook.mjs';
@@ -69,8 +70,7 @@ test('GHL user context decrypts like CryptoJS AES; sessions sign and verify', ()
   assert.equal(decryptGhlUserData(enc, pass), '{"userId":"u1"}');
   const cfg = config({ SESSION_SECRET: 's'.repeat(32) });
   const t = signSession({ id: 'u', name: 'J', email: 'jesse@a2zcs.net' }, 'ghl_sso', cfg);
-  assert.equal(roleFor(verifySession(t, cfg), cfg).owner, true);
-  assert.equal(roleFor(verifySession(signSession({ id: 'u', name: 'J', email: 'jesse@a2zcs.net' }, 'pin', cfg), cfg), cfg).owner, false, 'PIN sessions are never owner');
+  assert.equal(verifySession(t, cfg).email, 'jesse@a2zcs.net');
   assert.equal(verifySession(t + 'x', cfg), null);
 });
 
@@ -121,4 +121,33 @@ test('full sync against mocked GHL / Twilio / feeds builds a snapshot; a failing
   assert.equal(phoneKey('9495550001'), '+19495550001');
   const locked = await withSyncLock(store, async () => withSyncLock(store, async () => 'inner'));
   assert.equal(locked.skipped, true);
+});
+
+test('roles: Jesse is senior admin; admins need GHL sign-in; unlisted people are refused', async () => {
+  const cfg = config({ SESSION_SECRET: 's'.repeat(32) });
+  const access = { users: [{ email: 'maria@a2zcs.net', role: 'admin' }, { email: 'dan@a2zcs.net', role: 'viewer' }], requests: [] };
+  assert.equal(roleOf({ email: 'jesse@a2zcs.net', via: 'ghl_sso' }, access, cfg), 'senior');
+  assert.equal(roleOf({ email: 'jesse@a2zcs.net', via: 'pin' }, access, cfg), 'viewer');
+  assert.equal(roleOf({ email: 'maria@a2zcs.net', via: 'ghl_sso' }, access, cfg), 'admin');
+  assert.equal(roleOf({ email: 'maria@a2zcs.net', via: 'pin' }, access, cfg), 'viewer');
+  assert.equal(roleOf({ email: 'nobody@a2zcs.net', via: 'ghl_sso' }, access, cfg), null);
+  const map = new Map(); const store = useMemoryStore(map); _resetAccessCache();
+  await store.setJSON(KEYS.access, access);
+  const req = email => new Request('https://x/api/dashboard-data', { headers: { 'x-kpi-session': signSession({ id: email, name: email, email }, 'ghl_sso', cfg) } });
+  assert.equal((await requireSession(req('maria@a2zcs.net'), cfg, store)).owner, true);
+  await assert.rejects(requireSession(req('nobody@a2zcs.net'), cfg, store), e => e.status === 403);
+});
+
+test('only senior admins manage admins; seniors cannot be removed; admins manage viewers', () => {
+  const cfg = config({});
+  const data = () => ({ users: [{ email: 'maria@a2zcs.net', name: 'Maria', role: 'admin' }], requests: [{ email: 'kim@a2zcs.net' }] });
+  const admin = { name: 'Maria', role: 'admin' }, senior = { name: 'Jesse', role: 'senior' };
+  const d1 = applyChange(data(), { action: 'add', email: 'Kim@a2zcs.net', name: 'Kim' }, admin, cfg);
+  assert.equal(d1.users.find(u => u.email === 'kim@a2zcs.net').role, 'viewer');
+  assert.equal(d1.requests.length, 0, 'adding clears their request');
+  assert.throws(() => applyChange(data(), { action: 'add', email: 'x@a2zcs.net', role: 'admin' }, admin, cfg), e => e.status === 403);
+  assert.throws(() => applyChange(data(), { action: 'remove', email: 'maria@a2zcs.net' }, admin, cfg), e => e.status === 403);
+  assert.throws(() => applyChange(data(), { action: 'remove', email: 'jesse@a2zcs.net' }, senior, cfg), e => e.status === 409);
+  assert.equal(applyChange(data(), { action: 'set_role', email: 'maria@a2zcs.net', role: 'viewer' }, senior, cfg).users[0].role, 'viewer');
+  assert.equal(applyChange(data(), { action: 'remove', email: 'maria@a2zcs.net' }, senior, cfg).users.length, 0);
 });

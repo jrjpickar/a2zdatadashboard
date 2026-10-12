@@ -107,8 +107,12 @@ export function buildIndex(snap) {
   const opps = snap.opportunities || [];
   const servicePipes = [P.demo, P.labor, P.containers].filter(Boolean);
   const jobPipes = new Set([...servicePipes, P.changeOrders].filter(Boolean));
+  // Laborers are never leads or customers: contact type Laborer, anyone in the hiring
+  // pipeline, or anyone on the dispatch board's labor roster (by contact or phone).
   const laborerTypes = new Set(cfg.laborerTypes || ['laborer']);
-  const isLaborer = c => !!c && laborerTypes.has(c.type);
+  const laborerIds = new Set([...(snap.contacts || []).filter(c => laborerTypes.has(c.type)).map(c => c.id), ...opps.filter(o => o.pipelineId === P.hiring).map(o => o.contactId), ...(snap.dispatch?.labor || []).map(w => w.id)].filter(Boolean));
+  const laborerPhones = new Set([...(snap.contacts || []).filter(c => laborerIds.has(c.id)).map(c => c.phone), ...(snap.dispatch?.labor || []).map(w => w.phone)].filter(Boolean));
+  const isLaborer = c => !!c && (laborerIds.has(c.id) || (!!c.phone && laborerPhones.has(c.phone)));
   const wonByContact = new Map();
   for (const o of opps) if (jobPipes.has(o.pipelineId) && o.status === 'won' && o.contactId) (wonByContact.get(o.contactId) || wonByContact.set(o.contactId, []).get(o.contactId)).push(o.statusChangedAt || o.updatedAt || o.createdAt);
   for (const l of wonByContact.values()) l.sort();
@@ -137,8 +141,8 @@ export function buildIndex(snap) {
     if (o.stageId === pr.id && o.stageChangedAt) return { at: o.stageChangedAt, src: 'ghl' };
     return null;
   }
-  const idx = { cfg, P, tz, contacts, opps, servicePipes, jobPipes, isLaborer, wonByContact, touches, temps, proposalByPipe, sentAt,
-    settings: snap.settings || { businessHours: { open: '07:00', close: '17:00' }, workdays: [1, 2, 3, 4, 5, 6], rentalDays: 7, followUpDays: 3, containerFleet: {} } };
+  const idx = { cfg, P, tz, contacts, opps, servicePipes, jobPipes, isLaborer, laborerPhones, wonByContact, touches, temps, proposalByPipe, sentAt,
+    settings: { businessHours: { open: '07:00', close: '17:00' }, workdays: [1, 2, 3, 4, 5, 6], rentalDays: 7, followUpDays: 3, estimateDays: 3, containerFleet: {}, ...(snap.settings || {}) } };
   idx.serviceName = id => ({ [P.demo]: 'Demo', [P.labor]: 'Labor', [P.containers]: 'Containers', [P.changeOrders]: 'Change orders', [P.hiring]: 'Hiring' }[id] || cfg.pipelineNames?.[id] || 'Other');
   idx.isRepeat = (contactId, beforeIso) => (wonByContact.get(contactId) || []).some(t => t < beforeIso);
   idx.tempOf = c => (c?.temperature || temps.get(c?.id) || '');
@@ -194,7 +198,7 @@ export function callsSection(snap, { range, now }) {
   const idx = buildIndex(snap);
   const tz = idx.tz;
   const byPhone = new Map([...idx.contacts.values()].filter(c => c.phone).map(c => [c.phone, c]));
-  const calls = (snap.inboundCalls || []).filter(c => inRange(localDate(c.at, tz), range)).map(c => ({ ...c, contact: byPhone.get(c.from) || null }));
+  const calls = (snap.inboundCalls || []).filter(c => inRange(localDate(c.at, tz), range) && !idx.laborerPhones.has(c.from)).map(c => ({ ...c, contact: byPhone.get(c.from) || null }));
   const missed = calls.filter(c => !c.answered);
   const notCalledBack = missed.filter(c => !c.calledBackAt);
   const cbMins = missed.filter(c => c.calledBackAt).map(c => (toMs(c.calledBackAt) - toMs(c.at)) / MIN);
@@ -211,7 +215,7 @@ export function callsSection(snap, { range, now }) {
 // Things to do now (not filtered by period).
 export function actionQueue(snap, { rep, now }) {
   const idx = buildIndex(snap);
-  const tz = idx.tz, s = idx.settings, bdm = businessDayMinutes(s);
+  const tz = idx.tz, s = idx.settings, bdm = businessDayMinutes(s) * s.estimateDays;
   const items = [];
   const since = days => new Date(toMs(now) - days * DAY).toISOString();
   for (const o of leadOpps(idx, rep)) {
@@ -229,7 +233,7 @@ export function actionQueue(snap, { rep, now }) {
     }
     if (pr && stage && stage.position < pr.position && !sent && o.createdAt >= since(60)) {
       const age = businessMinutes(o.createdAt, now, s, tz);
-      if (age > bdm) items.push({ ...base, kind: 'estimate-overdue', label: 'Estimate not sent (1 business day)', since: o.createdAt, ageMin: age, overdue: true });
+      if (age > bdm) items.push({ ...base, kind: 'estimate-overdue', label: `Estimate not sent (${s.estimateDays} business day${s.estimateDays > 1 ? 's' : ''})`, since: o.createdAt, ageMin: age, overdue: true });
       continue;
     }
     if (pr && o.stageId === pr.id && sent) {
@@ -240,7 +244,7 @@ export function actionQueue(snap, { rep, now }) {
   }
   const byPhone = new Map([...idx.contacts.values()].filter(c => c.phone).map(c => [c.phone, c]));
   if (!rep) for (const c of snap.inboundCalls || []) {
-    if (c.answered || c.calledBackAt || c.at < since(7)) continue;
+    if (c.answered || c.calledBackAt || c.at < since(7) || idx.laborerPhones.has(c.from)) continue;
     const contact = byPhone.get(c.from);
     items.push({ kind: 'missed-call', label: 'Missed call, not called back', name: contact?.name || c.from, contactId: contact?.id || '', link: idx.contactLink(contact?.id), since: c.at, ageMin: (toMs(now) - toMs(c.at)) / MIN, overdue: true, phone: c.from });
   }
@@ -251,7 +255,7 @@ export function actionQueue(snap, { rep, now }) {
 // ---------- estimates & pipeline ----------
 export function estimatesSection(snap, { range, rep, now }) {
   const idx = buildIndex(snap);
-  const tz = idx.tz, s = idx.settings, bdm = businessDayMinutes(s);
+  const tz = idx.tz, s = idx.settings, bdm = businessDayMinutes(s) * s.estimateDays;
   const jobOpps = idx.opps.filter(o => idx.jobPipes.has(o.pipelineId) && !idx.isLaborer(idx.contacts.get(o.contactId)) && idx.repMatch(o, rep));
   const sentRows = [];
   for (const o of jobOpps) { const sa = idx.sentAt(o); if (sa && inRange(localDate(sa.at, tz), range)) sentRows.push({ o, sentAt: sa.at, src: sa.src, mins: businessMinutes(o.createdAt, sa.at, s, tz) }); }
@@ -282,7 +286,7 @@ export function estimatesSection(snap, { range, rep, now }) {
   const wonService = [...groupBy(won.filter(o => idx.servicePipes.includes(o.pipelineId) || o.pipelineId === idx.P.changeOrders), o => idx.serviceName(o.pipelineId))].map(([k, l]) => ({ key: k, count: l.length, value: sum(l, o => o.value), avg: sum(l, o => o.value) / l.length }));
   return {
     sent: sentRows.length, sentValue: sum(sentRows, r => r.o.value),
-    turnaround: { median: median(timed.map(r => r.mins)), withinDay: ratio(timed.filter(r => r.mins <= bdm).length, timed.length), timed: timed.length },
+    turnaround: { median: median(timed.map(r => r.mins)), withinDay: ratio(timed.filter(r => r.mins <= bdm).length, timed.length), timed: timed.length, days: s.estimateDays },
     won: won.filter(o => o.pipelineId !== idx.P.changeOrders).length, changeOrdersWon: won.filter(o => o.pipelineId === idx.P.changeOrders).length,
     revenue: sum(won, o => o.value), lostCount: lost.length,
     winRate: ratio(won.length, closed.length), winRateValue: ratio(sum(won, o => o.value), sum(closed, o => o.value)),
@@ -532,6 +536,26 @@ export function moneySection(snap, { range, now }) {
     costByCategory: [...cats].map(([k, v]) => ({ key: k, value: v, cor: COST_OF_REVENUE.includes(k.toLowerCase()) })).sort((a, b) => b.value - a.value),
     monthly, margins: margins.sort((a, b) => (a.pct ?? 0) - (b.pct ?? 0)), invoicesNoDoc: inv.filter(x => x.stage !== 'draft' && !x.hasDoc).length,
     arByClient: [...groupBy(ar, x => x.client)].map(([k, l]) => ({ key: k, value: sum(l, x => x.balance), overdue: sum(l.filter(x => x.stage === 'overdue'), x => x.balance) })).sort((a, b) => b.value - a.value).slice(0, 10)
+  };
+}
+
+// ---------- lead funnel (like the LCP acquisition funnel) ----------
+// Cohort = leads created in the period (laborers excluded); each stage is that
+// cohort's current state, so a lead created this month and won later still counts.
+export function leadFunnel(snap, { range, rep, now }) {
+  const idx = buildIndex(snap);
+  const tz = idx.tz, bdm = businessDayMinutes(idx.settings);
+  const leads = leadOpps(idx, rep).filter(o => inRange(localDate(o.createdAt, tz), range));
+  const rows = leads.map(o => ({ o, resp: firstResponse(idx, o), sent: idx.sentAt(o), won: o.status === 'won', lost: o.status === 'lost' }));
+  const st = (key, list) => ({ key, count: list.length, value: sum(list, r => r.o.value) });
+  const responded = rows.filter(r => r.resp);
+  const quick = rows.filter(r => r.resp && r.resp.minutes <= 4 * 60);
+  const sent = rows.filter(r => r.sent || r.won);
+  const won = rows.filter(r => r.won);
+  return {
+    stages: [st('leads', rows), st('responded', responded), st('estimate', sent), st('won', won)],
+    quick: quick.length, lost: rows.filter(r => r.lost).length, open: rows.filter(r => !r.won && !r.lost).length,
+    medianResponse: median(responded.map(r => r.resp.minutes)), wonValue: sum(won, r => r.o.value), bdm
   };
 }
 

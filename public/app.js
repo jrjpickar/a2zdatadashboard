@@ -52,7 +52,8 @@ const TABS = [
   { id: 'crews', label: 'Crews', render: renderCrews },
   { id: 'hiring', label: 'Hiring', render: renderHiring },
   { id: 'money', label: 'Money', render: renderMoney, owner: true },
-  { id: 'quality', label: 'Data Quality', render: renderQuality }
+  { id: 'quality', label: 'Data Quality', render: renderQuality },
+  { id: 'users', label: 'Users', render: renderUsers, owner: true }
 ];
 function opts() {
   const tz = state.snap?.config?.timeZone || 'America/Los_Angeles';
@@ -102,6 +103,9 @@ function renderLeads() {
     ${kpi('Callback time', mins(calls.calledBackMedianMin), `Median, missed calls · ${pct(calls.calledBackWithin60)} within 1 h`)}
   </div>
   <div class="grid">
+    ${card(12, 'Lead funnel', 'Leads created in this period and where they are now · laborers never count', funnelHtml(M.leadFunnel(state.snap, o)))}
+  </div><div style="height:14px"></div>
+  <div class="grid">
     ${card(12, 'Action queue', 'Leads with no reply, estimates overdue, proposals with no follow-up, missed calls not called back',
       `<div class="chips" id="queueChips">${kinds.map(([k, t]) => `<button type="button" data-kind="${k}" aria-pressed="${state.queueKind === k}">${t} (${k === 'all' ? q.length : q.filter(i => i.kind === k).length})</button>`).join('')}</div>${queueList(shown.slice(0, 60))}`, shown.length > 60 ? `Showing 60 of ${shown.length}.` : '')}
     ${card(4, 'Leads by source', 'Repeat = they had a won job before', countTable(l.bySource))}
@@ -122,7 +126,7 @@ function renderEstimates() {
   const maxStage = Math.max(0, ...e.byStage.map(s => s.value));
   return `<div class="kpis">
     ${kpi('Estimates sent', int(e.sent), money(e.sentValue))}
-    ${kpi('Sent within 1 business day', pct(e.turnaround.withinDay), `${int(e.turnaround.timed)} with a known request time`, e.turnaround.withinDay != null && e.turnaround.withinDay < 0.8 ? 'warn' : '')}
+    ${kpi(`Sent within ${e.turnaround.days} business days`, pct(e.turnaround.withinDay), `${int(e.turnaround.timed)} with a known request time`, e.turnaround.withinDay != null && e.turnaround.withinDay < 0.8 ? 'warn' : '')}
     ${kpi('Median turnaround', mins(e.turnaround.median), 'Business hours, lead to proposal sent')}
     ${kpi('Win rate', pct(e.winRate), `${int(e.won + e.changeOrdersWon)} won · ${int(e.lostCount)} lost`)}
     ${kpi('Win rate by dollars', pct(e.winRateValue), 'Won value ÷ decided value')}
@@ -258,12 +262,12 @@ function renderQuality() {
   }).join('');
   const checks = table([{ label: 'Area', get: r => r.area }, { label: 'Check', html: r => `${esc(r.label)}<div style="font-size:11.5px;color:var(--muted)">${esc(r.help)}</div>` }, { label: 'Count', num: true, html: r => r.severity === 'ok' ? pill('0', 'good') : pill(`${int(r.bad)}${r.total > 1 ? ' of ' + int(r.total) : ''}`, r.severity === 'crit' ? 'crit' : r.severity === 'info' ? '' : 'warn') }], dq.checks);
   const defs = [
-    ['Lead', 'An opportunity created in the Demo, Labor or Containers pipeline, for a contact not typed Laborer. Change orders are not leads.'],
+    ['Lead', 'An opportunity created in the Demo, Labor or Containers pipeline. Laborers never count: contact type Laborer, anyone in the hiring pipeline, or anyone on the dispatch labor roster. Change orders are not leads.'],
     ['Lead source', 'Opportunity source, else contact source. "Repeat customer" = that contact already had a won job.'],
     ['First response', 'First human outbound touch to the contact: a Twilio call, or an SMS / email / call in GHL conversations (workflow and bulk messages excluded), or an answered inbound call from them. Touches up to 1 hour before the lead was created count (the call that created it). Measured in business hours.'],
     ['Inbound calls', 'Twilio calls into A2Z numbers. Answered = the forwarded leg connected (or, with no forwarding, the call lasted the minimum seconds). Called back = any later outbound Twilio call to that number.'],
     ['Estimate sent', 'The opportunity entered Proposal Sent (Change Order Sent for change orders). Stage history is recorded by this dashboard from ' + (dq.history.stageTrackingSince ? shortDate(dq.history.stageTrackingSince) : 'its first sync') + '; earlier proposals use GHL\'s last stage change.'],
-    ['Within 1 business day', 'Proposal sent within one business day of business hours after the lead was created.'],
+    ['Within 3 business days', 'Proposal sent within three business days (business hours) after the lead was created. Change the number in Settings.'],
     ['Jobs won / revenue booked', 'Opportunities marked Won, dated by GHL\'s status change. Revenue = their value. Win rate = won ÷ (won + lost) decided in the period.'],
     ['Containers out', 'Container drops minus pickups per customer from the dispatch board\'s runs (Reset day / Complete). Swaps and dump & returns keep the count. Quantity, not yards.'],
     ['Crew utilization', 'Crew-days on jobs (each worker each day, from Complete EOD Sheet logs plus scheduled days) ÷ active laborers × work days, up to today.'],
@@ -284,6 +288,97 @@ function renderQuality() {
   </div>`;
 }
 
+// ---------- lead funnel (same shape as the LCP acquisition funnel) ----------
+let funnelAnimated = false;
+function funnelHtml(f) {
+  const defs = {
+    leads: ['New leads', 'Demo, labor and container requests created in the period'],
+    responded: ['Responded', 'A human call, text or email reached them'],
+    estimate: ['Estimate sent', 'Reached Proposal Sent (or was won)'],
+    won: ['Won', 'Marked won in GHL, any time since']
+  };
+  const palette = [['#fed7aa', '#431407'], ['#fdba74', '#431407'], ['#ea580c', '#fff'], ['#9a3412', '#fff']];
+  const top = Math.max(1, f.stages[0].count);
+  const widthOf = v => Math.max(0.1, Math.sqrt(Math.max(0, v) / top));
+  const rows = f.stages.map((st, i) => ({ ...st, i, width: widthOf(st.count), color: palette[i] }));
+  const parts = [];
+  rows.forEach((r, i) => {
+    const [label, note] = defs[r.key];
+    const share = i ? (f.stages[0].count ? r.count / f.stages[0].count : null) : 1;
+    const out = `<b>${pct(share)}</b><span>${i ? 'of new leads' : 'of new leads'}${r.value ? ' · ' + moneyShort(r.value) : ''}</span>`;
+    parts.push(`<div class="fn-label" title="${esc(note)}"><b>${label}</b><span>${esc(note)}</span></div>`
+      + `<div class="fn-track"><div class="fn-bar" style="--w:${(r.width * 100).toFixed(1)}%;--c:${r.color[0]};--ink:${r.color[1]}" title="${esc(`${label}: ${int(r.count)} · ${money(r.value)}`)}">${int(r.count)}</div></div>`
+      + `<div class="fn-out">${out}</div>`);
+    const next = rows[i + 1];
+    if (next) {
+      const a = r.width * 50, b = next.width * 50, step = r.count ? next.count / r.count : null;
+      parts.push(`<div></div><div class="fn-gap"><div class="fn-joint" style="--c:${next.color[0]};clip-path:polygon(${50 - a}% 0,${50 + a}% 0,${50 + b}% 100%,${50 - b}% 100%)"></div>${step != null && step <= 1 ? `<span class="fn-step">↓ ${pct(step)}</span>` : ''}</div><div></div>`);
+    }
+  });
+  const [L, R, E, W] = f.stages;
+  const summary = `<div class="fn-summary">
+    <span>Lead → won <b>${pct(L.count ? W.count / L.count : null)}</b></span>
+    <span>Estimate → won <b>${pct(E.count ? W.count / E.count : null)}</b></span>
+    <span>Replied within 4 business hours <b>${pct(L.count ? f.quick / L.count : null)}</b></span>
+    <span>Median first response <b>${mins(f.medianResponse)}</b></span>
+    <span>Still open <b>${int(f.open)}</b> · lost <b>${int(f.lost)}</b></span>
+  </div><p class="note">Band widths use a square-root scale so small stages stay readable; hover a band for exact numbers.</p>`;
+  const html = `<div class="fn${funnelAnimated ? '' : ' fn-anim'}">${parts.join('')}</div>${summary}`;
+  funnelAnimated = true;
+  return html;
+}
+
+// ---------- users (admins) ----------
+const ROLE_LABEL = { senior: 'Senior admin', admin: 'Admin', viewer: 'Viewer' };
+function renderUsers() {
+  const a = state.access;
+  if (!a) { loadAccess(); return '<div class="empty">Loading users…</div>'; }
+  const senior = a.me.role === 'senior';
+  const listed = new Set([...a.users.map(u => u.email), ...a.seniors]);
+  const pickable = a.ghlUsers.filter(u => !listed.has(u.email)).sort((x, y) => x.name.localeCompare(y.name));
+  const roleSelect = (u) => senior ? `<select data-role-for="${esc(u.email)}"><option value="viewer" ${u.role === 'viewer' ? 'selected' : ''}>Viewer</option><option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option></select>` : esc(ROLE_LABEL[u.role]);
+  const rows = [
+    ...a.seniors.map(e => ({ email: e, name: a.ghlUsers.find(u => u.email === e)?.name || e, role: 'senior', fixed: true })),
+    ...a.users
+  ];
+  const canRemove = u => !u.fixed && (senior || u.role !== 'admin');
+  return `<div class="grid">
+    ${card(8, 'Who can open the dashboard', 'Viewers see everything except Money, Settings and Users. Admins also see those and add or remove viewers. Only senior admins add or remove admins.',
+      table([{ label: 'Name', get: r => r.name }, { label: 'Email', get: r => r.email },
+        { label: 'Role', html: r => r.fixed ? pill('Senior admin', 'good') : (r.role === 'admin' && !senior ? pill('Admin') : roleSelect(r)) },
+        { label: 'Added', get: r => r.fixed ? 'Built in' : `${r.addedBy || ''}${r.addedAt ? ' · ' + shortDate(r.addedAt) : ''}` },
+        { label: '', html: r => canRemove(r) ? `<button class="btn" type="button" data-remove="${esc(r.email)}">Remove</button>` : '' }], rows),
+      'A PIN sign-in is always viewer level, even for admins. Changes apply within about 20 seconds.')}
+    ${card(4, 'Add someone', 'Pick a GHL user, or type an email', `
+      <div class="field"><label for="addUserPick">GHL user</label><select id="addUserPick" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:8px;background:var(--surface)"><option value="">Choose…</option>${pickable.map(u => `<option value="${esc(u.email)}" data-name="${esc(u.name)}">${esc(u.name)} (${esc(u.email)})</option>`).join('')}</select></div>
+      <div class="field"><label for="addUserEmail">or email</label><input id="addUserEmail" type="email" placeholder="name@a2zcs.net"></div>
+      <div class="field"><label for="addUserRole">Role</label><select id="addUserRole" style="width:100%;padding:7px 9px;border:1px solid var(--border);border-radius:8px;background:var(--surface)"><option value="viewer">Viewer</option>${senior ? '<option value="admin">Admin</option>' : ''}</select></div>
+      <div class="error" id="usersError"></div>
+      <button class="btn primary" type="button" id="addUserBtn">Add</button>`)}
+    ${card(6, 'Asked for access', 'People who opened the dashboard in GHL but are not on the list', table([{ label: 'Name', get: r => r.name }, { label: 'Email', get: r => r.email }, { label: 'When', get: r => when(r.at) }, { label: '', html: r => `<button class="btn primary" type="button" data-grant="${esc(r.email)}" data-name="${esc(r.name)}">Add as viewer</button> <button class="btn" type="button" data-dismiss="${esc(r.email)}">Dismiss</button>` }], a.requests, { empty: 'No requests.' }))}
+    ${senior ? card(6, 'Recent changes', 'Senior admins only', table([{ label: 'When', get: r => when(r.at) }, { label: 'Who', get: r => r.by }, { label: 'Change', get: r => `${r.action.replace('_', ' ')} ${r.email}${r.role ? ' (' + r.role + ')' : ''}` }], a.log || [], { empty: 'No changes yet.' })) : ''}
+  </div>`;
+}
+async function loadAccess() { try { state.access = await api('/api/access'); render(); } catch (e) { alertBanner(e.message); } }
+async function changeAccess(body) {
+  try { await api('/api/access', { method: 'POST', body: JSON.stringify(body) }); state.access = await api('/api/access'); render(); }
+  catch (e) { const el = $('usersError'); if (el) el.textContent = e.message; else alertBanner(e.message); }
+}
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-remove],[data-grant],[data-dismiss],#addUserBtn');
+  if (!t) return;
+  if (t.id === 'addUserBtn') {
+    const pick = $('addUserPick'), opt = pick.selectedOptions[0];
+    const email = ($('addUserEmail').value || pick.value).trim();
+    if (!email) { $('usersError').textContent = 'Choose a GHL user or type an email.'; return; }
+    changeAccess({ action: 'add', email, name: $('addUserEmail').value ? email : opt?.dataset.name || email, role: $('addUserRole').value });
+  }
+  if (t.dataset.remove && confirm(`Remove ${t.dataset.remove}?`)) changeAccess({ action: 'remove', email: t.dataset.remove });
+  if (t.dataset.grant) changeAccess({ action: 'add', email: t.dataset.grant, name: t.dataset.name, role: 'viewer' });
+  if (t.dataset.dismiss) changeAccess({ action: 'dismiss_request', email: t.dataset.dismiss });
+});
+document.addEventListener('change', e => { const s = e.target.closest('[data-role-for]'); if (s) changeAccess({ action: 'set_role', email: s.dataset.roleFor, role: s.value }); });
+
 // ---------- shell ----------
 function renderShell() {
   const tabs = TABS.filter(t => !t.owner || state.viewer?.owner);
@@ -293,7 +388,7 @@ function renderShell() {
   const users = (state.snap?.users || []).slice().sort((a, b) => a.name.localeCompare(b.name));
   $('repSelect').innerHTML = `<option value="">All reps</option>${users.map(u => `<option value="${esc(u.id)}" ${u.id === state.rep ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}`;
   $('settingsBtn').hidden = !state.viewer?.owner;
-  $('who').textContent = state.viewer ? state.viewer.name : '';
+  $('who').innerHTML = state.viewer ? `${esc(state.viewer.name)} <span class="role-badge">${esc((ROLE_LABEL[state.viewer.role] || '').toUpperCase())}</span>` : '';
 }
 function render() {
   if (!state.snap) { $('view').innerHTML = '<div class="banner">No data yet. The first sync runs within 15 minutes of deploy, or click Refresh live data.</div>'; return; }
@@ -326,7 +421,7 @@ async function load() {
   const data = await api('/api/dashboard-data', { headers: state.etag ? { 'if-none-match': state.etag } : {} });
   if (data.notModified) return false;
   const changed = data.snapshot?.builtAt !== state.snap?.builtAt;
-  state.snap = data.snapshot; state.viewer = data.viewer; state.status = data.status; state.etag = data.snapshot ? `"${data.snapshot.builtAt}-${data.viewer.owner ? 'o' : 'v'}"` : '';
+  state.snap = data.snapshot; state.viewer = data.viewer; state.status = data.status; state.etag = data.snapshot ? `"${data.snapshot.builtAt}-${data.viewer.role}"` : '';
   return changed;
 }
 // Ask GHL (the Custom Page host) for the logged-in user. GHL can be slow to start
@@ -383,7 +478,7 @@ async function boot() {
 document.addEventListener('click', e => {
   const t = e.target.closest('[data-tab],[data-period],[data-kind]');
   if (!t) return;
-  if (t.dataset.tab) { state.tab = t.dataset.tab; store.set('kpi-tab', state.tab); }
+  if (t.dataset.tab) { state.tab = t.dataset.tab; store.set('kpi-tab', state.tab); if (t.dataset.tab === 'users') state.access = null; }
   if (t.dataset.period) { state.period = t.dataset.period; store.set('kpi-period', state.period); }
   if (t.dataset.kind) state.queueKind = t.dataset.kind;
   render();
@@ -409,7 +504,7 @@ $('settingsBtn').addEventListener('click', () => {
   const s = state.snap?.settings || {};
   const fleet = { '10 Yard': 0, '20 Yard': 0, '30 Yard': 0, '40 Yard': 0, ...(s.containerFleet || {}) };
   $('fleetRows').innerHTML = Object.entries(fleet).map(([k, v]) => `<div><label for="fleet-${esc(k)}">${esc(k)}</label><input type="number" min="0" max="10000" id="fleet-${esc(k)}" data-size="${esc(k)}" value="${Number(v) || 0}"></div>`).join('');
-  $('rentalDays').value = s.rentalDays ?? 7; $('followUpDays').value = s.followUpDays ?? 3;
+  $('rentalDays').value = s.rentalDays ?? 7; $('followUpDays').value = s.followUpDays ?? 3; $('estimateDays').value = s.estimateDays ?? 3;
   $('openTime').value = s.businessHours?.open || '07:00'; $('closeTime').value = s.businessHours?.close || '17:00';
   const wd = new Set(s.workdays || [1, 2, 3, 4, 5, 6]);
   $('workdays').innerHTML = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d, i) => `<label><input type="checkbox" value="${i}" ${wd.has(i) ? 'checked' : ''}>${d}</label>`).join('');
@@ -419,7 +514,7 @@ $('settingsBtn').addEventListener('click', () => {
 $('settingsSave').addEventListener('click', async () => {
   const body = {
     containerFleet: Object.fromEntries([...document.querySelectorAll('#fleetRows input')].map(i => [i.dataset.size, Number(i.value) || 0])),
-    rentalDays: Number($('rentalDays').value), followUpDays: Number($('followUpDays').value),
+    rentalDays: Number($('rentalDays').value), followUpDays: Number($('followUpDays').value), estimateDays: Number($('estimateDays').value),
     businessHours: { open: $('openTime').value, close: $('closeTime').value },
     workdays: [...document.querySelectorAll('#workdays input:checked')].map(i => Number(i.value))
   };

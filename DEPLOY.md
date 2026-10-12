@@ -31,12 +31,11 @@ Three projects ship together. Deploy the dispatch board and Ledger updates first
 | `DISPATCH_EXPORT_KEY` | yes | Same value as the dispatch site's `METRICS_EXPORT_KEY` |
 | `LEDGER_URL` | yes | e.g. `https://your-ledger-site.netlify.app` |
 | `LEDGER_EXPORT_KEY` | yes | Same value as the Ledger's `METRICS_EXPORT_KEY` |
-| `DASHBOARD_OWNERS` | optional | Extra emails who see Money + Settings (jesse@a2zcs.net always does) |
-| `DASHBOARD_VIEWERS` | optional | Limit who can open it (emails). Blank = any GHL user in the location |
+| `DASHBOARD_OWNERS` | optional | Extra senior admins by email (jesse@a2zcs.net is always one). Everyone else is added on the Users tab |
 | `DASHBOARD_PIN` | optional | PIN for signing in outside GHL (never gets owner rights) |
 | `GHL_WEBHOOK_SECRET` | optional | Turns on `/api/ghl-webhook` for exact stage-change times (below) |
 
-Defaults you only change if GHL changes: `GHL_LOCATION_ID` (QUcu2PEAxPV1sQm1GQCq), `DEMO_PIPELINE_ID`, `LABOR_PIPELINE_ID`, `CONTAINER_PIPELINE_ID`, `CHANGE_ORDER_PIPELINE_ID`, `HIRING_PIPELINE_ID` (VMYXilFR93XJEgprCi7j), `PROPOSAL_STAGE_NAMES` (Proposal Sent,Change Order Sent), `CUSTOMER_CONTACT_TYPES` (General-contractor,Developer,Home-owner), `LABORER_CONTACT_TYPES` (Laborer), `CONTACT_TYPE_FIELD_ID` (blank = a custom field named "Contact Type", else GHL's built-in type), `GHL_TEMPERATURE_FIELD_ID` (xOi9gCcAt2UvgA6POHMB), `ACTIVE_TEMPERATURES` (Warm,Hot,VIP), `DORMANT_TEMPERATURES` (Cold), `SYNC_INTERVAL_MINUTES` (30), `RESPONSE_LOOKBACK_DAYS` (120), `TWILIO_HISTORY_DAYS` (400), `TWILIO_ANSWER_MIN_SECONDS` (20, only used if calls aren't forwarded).
+Defaults you only change if GHL changes: `GHL_LOCATION_ID` (QUcu2PEAxPV1sQm1GQCq), `DEMO_PIPELINE_ID`, `LABOR_PIPELINE_ID`, `CONTAINER_PIPELINE_ID`, `CHANGE_ORDER_PIPELINE_ID`, `HIRING_PIPELINE_ID` (VMYXilFR93XJEgprCi7j), `PROPOSAL_STAGE_NAMES` (Proposal Sent,Change Order Sent), `CUSTOMER_CONTACT_TYPES` (General-contractor,Developer,Home-owner), `LABORER_CONTACT_TYPES` (Laborer), `CONTACT_TYPE_FIELD_ID` (blank = a custom field named "Contact Type", else GHL's built-in type), `GHL_TEMPERATURE_FIELD_ID` (xOi9gCcAt2UvgA6POHMB), `ACTIVE_TEMPERATURES` (Warm,Hot,VIP), `DORMANT_TEMPERATURES` (Cold), `SYNC_INTERVAL_MINUTES` (30, 6am–9pm Pacific), `OFF_HOURS_SYNC_MINUTES` (120, overnight), `CONTACTS_FULL_SYNC_HOURS` (6; in between only new contacts are looked up), `RESPONSE_LOOKBACK_DAYS` (120), `TWILIO_HISTORY_DAYS` (400), `TWILIO_ANSWER_MIN_SECONDS` (20, only used if calls aren't forwarded).
 
 3. Deploy. Check that the `sync-schedule` scheduled function exists (production deploys only).
 4. GHL: in the private Marketplace app add a **Custom Page** (left nav) with the new site URL. Update the app installation for A2Z.
@@ -46,6 +45,14 @@ Defaults you only change if GHL changes: `GHL_LOCATION_ID` (QUcu2PEAxPV1sQm1GQCq
 ### Optional: exact stage-change times
 
 Without this, stage changes are noticed on the next sync (≤30 min). For exact times: GHL workflow, trigger **Pipeline Stage Changed** (Demo, Labor, Containers, Change Orders), action **Webhook** POST to `https://<kpi-site>/api/ghl-webhook?key=<GHL_WEBHOOK_SECRET>` with custom data `opportunity_id = {{opportunity.id}}` and `stage_name = {{opportunity.pipeline_stage}}` (plus `pipeline_id = {{opportunity.pipeline_id}}`).
+
+## Users and roles
+
+- **Senior admin**: jesse@a2zcs.net (built in) plus `DASHBOARD_OWNERS`. Can't be removed. The only role that adds, changes or removes admins.
+- **Admin**: sees Money, Settings and the Users tab; adds and removes viewers.
+- **Viewer**: everything else.
+- Add people on the **Users** tab (pick a GHL user or type an email). Anyone not on the list who opens the dashboard is refused and shows up under "Asked for access" with a one-click Add.
+- A PIN sign-in is always viewer level.
 
 ## What to know
 

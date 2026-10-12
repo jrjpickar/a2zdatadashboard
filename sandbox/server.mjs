@@ -10,11 +10,21 @@ const root = new URL('../public/', import.meta.url).pathname;
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml' };
 let snapshot = sampleSnapshot();
 const owner = process.env.SANDBOX_VIEWER !== '1';
+const role = owner ? 'senior' : 'viewer';
+let access = { users: [{ email: 'maria@example.com', name: 'Maria Lopez', role: 'admin', addedBy: 'Sandbox', addedAt: new Date().toISOString() }, { email: 'dan@example.com', name: 'Dan Ortiz', role: 'viewer', addedBy: 'Sandbox', addedAt: new Date().toISOString() }], requests: [{ email: 'kim@example.com', name: 'Kim Tran', at: new Date().toISOString() }], log: [] };
 const send = (res, status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
 createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/api/session') return send(res, 200, { token: 'sandbox', user: { name: 'Sandbox', email: 'sandbox@example.com' }, owner });
-  if (url.pathname === '/api/dashboard-data') return send(res, 200, { viewer: { name: 'Sandbox (sample data)', email: 'sandbox@example.com', owner }, snapshot: owner ? snapshot : { ...snapshot, ledger: null }, status: { lastRunAt: snapshot.builtAt } });
+  if (url.pathname === '/api/dashboard-data') return send(res, 200, { viewer: { name: 'Sandbox (sample data)', email: 'sandbox@example.com', owner, role }, snapshot: owner ? snapshot : { ...snapshot, ledger: null }, status: { lastRunAt: snapshot.builtAt } });
+  if (url.pathname === '/api/access') {
+    if (req.method === 'POST') {
+      let body = ''; for await (const c of req) body += c;
+      const { applyChange } = await import('../lib/access.mjs');
+      try { access = applyChange(structuredClone(access), JSON.parse(body), { name: 'Sandbox', role }, { owners: ['sandbox@example.com'] }); } catch (e) { return send(res, e.status || 400, { error: e.message }); }
+    }
+    return send(res, 200, { me: { name: 'Sandbox', email: 'sandbox@example.com', role }, seniors: ['sandbox@example.com'], ...access, ghlUsers: snapshot.users.map(u => ({ ...u, email: u.name.split(' ')[0].toLowerCase() + '@example.com' })) });
+  }
   if (url.pathname === '/api/refresh') { snapshot = { ...sampleSnapshot(), builtAt: new Date().toISOString() }; return send(res, 200, { ok: true }); }
   if (url.pathname === '/api/settings') {
     let body = ''; for await (const c of req) body += c;

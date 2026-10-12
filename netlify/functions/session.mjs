@@ -2,15 +2,17 @@
 // GET  /api/session -> who is signed in
 import { json, errorResponse, readJson, sameOrigin, HttpError } from '../../lib/http.mjs';
 import { config } from '../../lib/config.mjs';
-import { signSession, sessionCookie, ghlUserFromContext, requireSession, allowed, equal } from '../../lib/auth.mjs';
+import { signSession, sessionCookie, ghlUserFromContext, requireSession, roleFor, equal } from '../../lib/auth.mjs';
+import { noteRequest } from '../../lib/access.mjs';
+import { kpiStore } from '../../lib/store.mjs';
 
 const fails = new Map();
 export default async function handler(request) {
   try {
     const cfg = config();
     if (request.method === 'GET') {
-      const s = requireSession(request, cfg);
-      return json({ user: { name: s.name, email: s.email }, owner: s.owner, via: s.via, pinAvailable: !!cfg.pin });
+      const s = await requireSession(request, cfg);
+      return json({ user: { name: s.name, email: s.email }, role: s.role, owner: s.owner, via: s.via, pinAvailable: !!cfg.pin });
     }
     if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
     sameOrigin(request);
@@ -27,8 +29,12 @@ export default async function handler(request) {
       fails.delete(ip);
       user = { id: 'pin:' + email, name: email, email }; via = 'pin';
     } else throw new HttpError('Unknown sign-in action');
-    if (!allowed(user.email, cfg)) throw new HttpError(`${user.email} is not on the dashboard viewer list (DASHBOARD_VIEWERS).`, 403);
     const token = signSession(user, via, cfg);
-    return json({ token, user: { name: user.name, email: user.email }, owner: via === 'ghl_sso' && cfg.owners.includes(user.email) }, 200, { 'set-cookie': sessionCookie(token) });
+    const r = await roleFor({ uid: user.id, name: user.name, email: user.email, via }, cfg);
+    if (!r.role) {
+      if (via === 'ghl_sso') await noteRequest(kpiStore(), user).catch(() => {});
+      throw new HttpError(`${user.email} doesn't have access yet. Ask an admin to add you on the Users tab.`, 403);
+    }
+    return json({ token, user: { name: user.name, email: user.email }, role: r.role, owner: r.owner }, 200, { 'set-cookie': sessionCookie(token) });
   } catch (error) { return errorResponse(error); }
 }

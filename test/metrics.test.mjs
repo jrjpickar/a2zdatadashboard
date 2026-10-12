@@ -5,7 +5,7 @@ import { sampleSnapshot } from '../sandbox/sample.mjs';
 
 const TZ = 'America/Los_Angeles';
 const NOW = Date.parse('2026-10-12T20:00:00Z');
-const S = { businessHours: { open: '07:00', close: '17:00' }, workdays: [1, 2, 3, 4, 5, 6], rentalDays: 7, followUpDays: 3, containerFleet: { '10 Yard': 4 } };
+const S = { businessHours: { open: '07:00', close: '17:00' }, workdays: [1, 2, 3, 4, 5, 6], rentalDays: 7, followUpDays: 3, estimateDays: 1, containerFleet: { '10 Yard': 4 } };
 const P = { demo: 'D', labor: 'L', containers: 'C', changeOrders: 'CO', hiring: 'H' };
 const base = over => ({ settings: S, config: { timeZone: TZ, pipelines: P, stages: { Dp: { name: 'Proposal Sent', position: 1, pipelineId: 'D' }, Dn: { name: 'New Lead', position: 0, pipelineId: 'D' } }, proposalStageIds: ['Dp'], laborerTypes: ['laborer'], activeTemps: ['warm', 'hot', 'vip'], dormantTemps: ['cold'] }, contacts: [], opportunities: [], ...over });
 
@@ -113,4 +113,33 @@ test('every tab computes on the sample snapshot without throwing', () => {
   }
   assert.ok(M.actionQueue(snap, { rep: 'u-dan', now: NOW }).every(i => i.kind !== 'missed-call'));
   assert.ok(M.dataQuality(snap, { now: NOW }).checks.length > 5);
+});
+
+test('laborers (typed, in hiring, or on the labor roster) are never leads, queue items or lead calls', () => {
+  const snap = base({
+    contacts: [{ id: 'c1', type: 'home-owner', phone: '+19495550001' }, { id: 'w1', type: '', phone: '+19495550002' }, { id: 'w2', type: '', phone: '+19495550003' }],
+    opportunities: [
+      { id: 'o1', pipelineId: 'D', stageId: 'Dn', status: 'open', createdAt: '2026-10-12T16:00:00Z', contactId: 'c1' },
+      { id: 'o2', pipelineId: 'D', stageId: 'Dn', status: 'open', createdAt: '2026-10-12T16:00:00Z', contactId: 'w1' },
+      { id: 'h1', pipelineId: 'H', status: 'open', createdAt: '2026-10-01T16:00:00Z', contactId: 'w1' },
+      { id: 'o3', pipelineId: 'D', stageId: 'Dn', status: 'open', createdAt: '2026-10-12T16:00:00Z', contactId: 'w2' }
+    ],
+    dispatch: { labor: [{ id: '', name: 'W2', phone: '+19495550003' }], jobs: [], moves: [], moveRuns: [], jobDays: [] },
+    inboundCalls: [{ sid: 'a', at: '2026-10-12T17:00:00Z', from: '+19495550003', answered: false, calledBackAt: '' }, { sid: 'b', at: '2026-10-12T17:30:00Z', from: '+19495550001', answered: false, calledBackAt: '' }]
+  });
+  const o = { range: { from: '2026-10-12', to: '2026-10-12' }, rep: '', now: NOW };
+  assert.equal(M.leadsSection(snap, o).total, 1);
+  const q = M.actionQueue(snap, o);
+  assert.ok(q.some(i => i.contactId === 'c1'));
+  assert.ok(q.every(i => i.contactId !== 'w1' && i.contactId !== 'w2' && i.phone !== '+19495550003'));
+  assert.equal(M.callsSection(snap, o).total, 1);
+  const f = M.leadFunnel(snap, o);
+  assert.equal(f.stages[0].count, 1);
+});
+
+test('estimates: within N business days follows the setting (default 3)', () => {
+  const mk = estimateDays => base({ settings: { ...S, estimateDays }, contacts: [{ id: 'c1', type: 'developer' }], opportunities: [{ id: 'a', pipelineId: 'D', stageId: 'Dp', status: 'open', value: 1, createdAt: '2026-10-05T16:00:00Z', contactId: 'c1' }], stageEvents: { a: { Dp: { at: '2026-10-07T20:00:00Z', src: 'sync' } } } });
+  const o = { range: { from: '2026-10-01', to: '2026-10-12' }, rep: '', now: NOW };
+  assert.equal(M.estimatesSection(mk(1), o).turnaround.withinDay, 0);
+  assert.equal(M.estimatesSection(mk(3), o).turnaround.withinDay, 1);
 });

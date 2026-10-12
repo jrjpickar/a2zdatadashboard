@@ -7,10 +7,10 @@ import { kpiStore, KEYS } from '../../lib/store.mjs';
 export default async function handler(request) {
   try {
     const store = kpiStore();
-    if (request.method === 'GET') { requireSession(request); return json(cleanSettings((await store.get(KEYS.settings, { type: 'json' })) || {})); }
+    if (request.method === 'GET') { await requireSession(request); return json(cleanSettings((await store.get(KEYS.settings, { type: 'json' })) || {})); }
     if (request.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
     sameOrigin(request);
-    const owner = requireOwner(request);
+    const owner = await requireOwner(request);
     const settings = cleanSettings(await readJson(request));
     await store.setJSON(KEYS.settings, { ...settings, updatedBy: owner.name, updatedAt: new Date().toISOString() });
     // Apply right away without waiting for the next sync.
