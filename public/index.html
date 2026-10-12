@@ -3,7 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer">
 <title>A2Z Operations Dashboard</title>
 <link rel="stylesheet" href="styles.css">
 </head>
@@ -11,6 +10,7 @@
 <div id="signin" class="signin" hidden>
   <h1>A2Z Operations Dashboard</h1>
   <p id="signinMsg">Signing you in through GHL…</p>
+  <p id="signinDiag" hidden style="font-size:11.5px;color:var(--muted);word-break:break-all"></p>
   <form id="pinForm" hidden>
     <div class="field"><label for="pinEmail">GHL login email</label><input id="pinEmail" type="email" autocomplete="username" required></div>
     <div class="field"><label for="pinCode">Dashboard PIN</label><input id="pinCode" type="password" inputmode="numeric" autocomplete="current-password" required></div>

@@ -333,6 +333,12 @@ async function load() {
 // listening, and the page can sit one frame deeper than expected, so ask the
 // parent and the top window every second for up to 15 s. The answer is encrypted
 // and checked on the server, so accepting it from either frame is safe.
+const ghlDiag = { asked: 0, seen: [] };
+addEventListener('message', e => { if (ghlDiag.seen.length < 8) ghlDiag.seen.push(`${e.origin || '?'} → ${typeof e.data === 'object' ? JSON.stringify(Object.keys(e.data || {})) + ' ' + (e.data?.message || e.data?.type || '') : String(e.data).slice(0, 60)}`); });
+function diagText() {
+  let top = 'blocked'; try { top = window.top === window ? 'not embedded' : 'embedded'; } catch {}
+  return `Frame: ${window.parent === window ? 'not embedded' : 'embedded'} · opened from: ${document.referrer ? new URL(document.referrer).origin : 'unknown'} · requests sent: ${ghlDiag.asked} · messages received: ${ghlDiag.seen.length ? ghlDiag.seen.join(' | ') : 'none'}`;
+}
 function askGhl() {
   return new Promise((resolve, reject) => {
     const targets = [...new Set([window.parent, window.top].filter(w => w && w !== window))];
@@ -342,7 +348,7 @@ function askGhl() {
       if (!targets.includes(e.source) || e.data?.message !== 'REQUEST_USER_DATA_RESPONSE' || !e.data.payload) return;
       done(); resolve(e.data.payload);
     }
-    const ask = () => targets.forEach(w => { try { w.postMessage({ message: 'REQUEST_USER_DATA' }, '*'); } catch {} });
+    const ask = () => { ghlDiag.asked++; targets.forEach(w => { try { w.postMessage({ message: 'REQUEST_USER_DATA' }, '*'); } catch {} }); };
     const stop = setTimeout(() => { done(); reject(new Error('GHL did not send your user. Open the dashboard from the A2Z Dashboard app menu item (a Custom Page of the Marketplace app), not a custom menu link.')); }, 15000);
     addEventListener('message', on);
     ask(); timer = setInterval(ask, 1000);
@@ -352,7 +358,7 @@ async function signIn() {
   $('app').hidden = true; $('signin').hidden = false;
   if (window.parent !== window) {
     try { const enc = await askGhl(); const r = await api('/api/session', { method: 'POST', body: JSON.stringify({ action: 'ghl', encryptedData: enc }) }); store.set(TOKEN_KEY, r.token); return; }
-    catch (e) { $('signinMsg').textContent = e.message; }
+    catch (e) { $('signinMsg').textContent = e.message; $('signinDiag').textContent = diagText(); $('signinDiag').hidden = false; }
   } else $('signinMsg').textContent = 'Open this dashboard from its menu item in GHL, or sign in with your GHL email and the dashboard PIN.';
   $('pinForm').hidden = false;
   await new Promise(resolve => {
