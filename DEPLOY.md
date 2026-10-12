@@ -1,0 +1,56 @@
+# Deploy the A2Z KPI dashboard
+
+Three projects ship together. Deploy the dispatch board and Ledger updates first (each only adds a read-only feed), then the dashboard.
+
+## 1. Dispatch board 1.9 (existing site)
+
+1. Replace the repo contents with `a2z-dispatch-board-1.9`, deploy as usual (same site, same database).
+2. Add env var **`METRICS_EXPORT_KEY`** = a long random string (`openssl rand -hex 32`). Redeploy.
+3. New tables are created on the first request. From now on, Complete EOD Sheet and move Reset day / Complete keep their history. Days worked since 1.8 are rebuilt automatically from the Make job-log payloads.
+
+## 2. Ledger (existing site)
+
+1. Replace the repo contents with `a2zaccounting` (adds `netlify/functions/metrics-export.mts` only), deploy.
+2. Add env var **`METRICS_EXPORT_KEY`** = another long random string. Redeploy.
+
+## 3. KPI dashboard (new Netlify site)
+
+1. New site from `a2z-kpi-dashboard`. Build `npm run build`, publish `public`, functions `netlify/functions`, Node 22+.
+2. Environment variables (Functions scope):
+
+| Variable | Required | Value |
+|---|---|---|
+| `GHL_API_TOKEN` | yes | Private Integration token for the A2Z location. Scopes: opportunities.readonly, contacts.readonly, users.readonly, locations/customFields.readonly, conversations.readonly, conversations/message.readonly |
+| `GHL_APP_SHARED_SECRET` | yes | Shared Secret of the private Marketplace app (same one the dispatch board / dialer uses is fine) |
+| `SESSION_SECRET` | yes | Long random string |
+| `SYNC_SECRET` | yes | Long random string (lets the scheduler start the background sync) |
+| `TWILIO_ACCOUNT_SID` | yes | The account / subaccount A2Z's numbers live in (AC…) |
+| `TWILIO_AUTH_TOKEN` | yes | Its auth token (or use `TWILIO_API_KEY_SID` + `TWILIO_API_KEY_SECRET`) |
+| `TWILIO_NUMBERS` | recommended | A2Z's inbound numbers, comma separated, e.g. `+19497763898`. Blank = every inbound call in the account |
+| `DISPATCH_URL` | yes | e.g. `https://your-dispatch-site.netlify.app` |
+| `DISPATCH_EXPORT_KEY` | yes | Same value as the dispatch site's `METRICS_EXPORT_KEY` |
+| `LEDGER_URL` | yes | e.g. `https://your-ledger-site.netlify.app` |
+| `LEDGER_EXPORT_KEY` | yes | Same value as the Ledger's `METRICS_EXPORT_KEY` |
+| `DASHBOARD_OWNERS` | optional | Extra emails who see Money + Settings (jesse@a2zcs.net always does) |
+| `DASHBOARD_VIEWERS` | optional | Limit who can open it (emails). Blank = any GHL user in the location |
+| `DASHBOARD_PIN` | optional | PIN for signing in outside GHL (never gets owner rights) |
+| `GHL_WEBHOOK_SECRET` | optional | Turns on `/api/ghl-webhook` for exact stage-change times (below) |
+
+Defaults you only change if GHL changes: `GHL_LOCATION_ID` (QUcu2PEAxPV1sQm1GQCq), `DEMO_PIPELINE_ID`, `LABOR_PIPELINE_ID`, `CONTAINER_PIPELINE_ID`, `CHANGE_ORDER_PIPELINE_ID`, `HIRING_PIPELINE_ID` (VMYXilFR93XJEgprCi7j), `PROPOSAL_STAGE_NAMES` (Proposal Sent,Change Order Sent), `CUSTOMER_CONTACT_TYPES` (General-contractor,Developer,Home-owner), `LABORER_CONTACT_TYPES` (Laborer), `CONTACT_TYPE_FIELD_ID` (blank = a custom field named "Contact Type", else GHL's built-in type), `GHL_TEMPERATURE_FIELD_ID` (xOi9gCcAt2UvgA6POHMB), `ACTIVE_TEMPERATURES` (Warm,Hot,VIP), `DORMANT_TEMPERATURES` (Cold), `SYNC_INTERVAL_MINUTES` (30), `RESPONSE_LOOKBACK_DAYS` (120), `TWILIO_HISTORY_DAYS` (400), `TWILIO_ANSWER_MIN_SECONDS` (20, only used if calls aren't forwarded).
+
+3. Deploy. Check that the `sync-schedule` scheduled function exists (production deploys only).
+4. GHL: in the private Marketplace app add a **Custom Page** (left nav) with the new site URL. Update the app installation for A2Z.
+5. Open it in GHL → **Refresh live data**. The first sync takes a few minutes (all contacts, all opportunities, 400 days of Twilio calls). Then open **Data Quality**: every feed should say OK and "Estimate-sent stages" should list Demo, Labor, Containers and Change Orders.
+6. Open **Settings** (owners) and enter how many containers you own per size, the rental days before a pickup is past due, business hours and work days.
+
+### Optional: exact stage-change times
+
+Without this, stage changes are noticed on the next sync (≤30 min). For exact times: GHL workflow, trigger **Pipeline Stage Changed** (Demo, Labor, Containers, Change Orders), action **Webhook** POST to `https://<kpi-site>/api/ghl-webhook?key=<GHL_WEBHOOK_SECRET>` with custom data `opportunity_id = {{opportunity.id}}` and `stage_name = {{opportunity.pipeline_stage}}` (plus `pipeline_id = {{opportunity.pipeline_id}}`).
+
+## What to know
+
+- **History starts at deploy for three things.** GHL keeps no stage history, so Proposal Sent dates are recorded from the first sync (earlier ones use GHL's last stage change). Hire dates (laborer turned warm/hot/VIP) start at the first sync; laborers already warm+ count as active with no hire date. Container/truck runs are exact from dispatch 1.9; earlier closed container moves use their close date.
+- **First response** = first human outbound touch: Twilio call, or GHL SMS / email / call. Workflow, bulk and campaign messages don't count. Measured in business hours.
+- **Answered calls**: a forwarded leg connected. If A2Z's Twilio setup doesn't forward (e.g. a TwiML app rings browsers), the Data Quality tab shows the detection mode; tell me and I'll adjust.
+- **Revenue booked** uses GHL opportunity values. **Money** uses the Ledger and is owners only (also enforced on the server).
+- Netlify usage: one background sync every 30 minutes (a few minutes of function time), Blobs storage, and the page loads one gzip snapshot.

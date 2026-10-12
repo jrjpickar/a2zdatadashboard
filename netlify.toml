@@ -1,0 +1,38 @@
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+  command = "npm run build"
+
+[functions]
+  node_bundler = "esbuild"
+
+[[redirects]]
+  from = "/api/session"
+  to = "/.netlify/functions/session"
+  status = 200
+
+[[redirects]]
+  from = "/api/dashboard-data"
+  to = "/.netlify/functions/dashboard-data"
+  status = 200
+
+[[redirects]]
+  from = "/api/refresh"
+  to = "/.netlify/functions/refresh"
+  status = 200
+
+[[redirects]]
+  from = "/api/settings"
+  to = "/.netlify/functions/settings"
+  status = 200
+
+[[redirects]]
+  from = "/api/ghl-webhook"
+  to = "/.netlify/functions/ghl-webhook"
+  status = 200
+
+[[headers]]
+  for = "/api/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "same-origin"

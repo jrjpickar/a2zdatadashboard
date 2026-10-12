@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>A2Z Operations Dashboard</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="signin" class="signin" hidden>
+  <h1>A2Z Operations Dashboard</h1>
+  <p id="signinMsg">Signing you in through GHL…</p>
+  <form id="pinForm" hidden>
+    <div class="field"><label for="pinEmail">GHL login email</label><input id="pinEmail" type="email" autocomplete="username" required></div>
+    <div class="field"><label for="pinCode">Dashboard PIN</label><input id="pinCode" type="password" inputmode="numeric" autocomplete="current-password" required></div>
+    <div class="error" id="pinError"></div>
+    <button class="btn primary" type="submit">Sign in</button>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand-row">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V9l7-5 7 5v12"/><path d="M9 21v-6h6v6"/></svg></div>
+          <div><h1>A2Z Operations Dashboard</h1><p id="subtitle">Leads, estimates, containers, crews and hiring</p></div>
+        </div>
+        <div class="top-actions">
+          <label class="who" for="repSelect">Rep</label>
+          <select id="repSelect" aria-label="Filter by rep"><option value="">All reps</option></select>
+          <button class="top-btn" id="refreshBtn" type="button">Refresh live data</button>
+          <button class="top-btn" id="settingsBtn" type="button" hidden>Settings</button>
+          <button class="top-btn" id="themeBtn" type="button" aria-label="Switch light or dark mode">Dark mode</button>
+          <span class="who" id="who"></span>
+        </div>
+      </div>
+      <nav class="tabs" role="tablist" id="tabs" aria-label="Dashboard sections"></nav>
+    </div>
+  </header>
+  <main>
+    <div id="banners"></div>
+    <div class="filter-bar">
+      <div class="seg" id="periodSeg" role="group" aria-label="Period"></div>
+      <span class="range-label" id="rangeLabel"></span>
+      <span class="spacer"></span>
+      <span class="freshness" id="freshness"></span>
+    </div>
+    <section id="view" aria-live="polite"></section>
+  </main>
+</div>
+
+<dialog id="settingsDialog">
+  <form method="dialog" id="settingsForm">
+    <h2 style="margin:0 0 4px;font-size:17px">Settings</h2>
+    <p class="sub" style="margin:0 0 14px;color:var(--text-2);font-size:12.5px">Shared with everyone who opens the dashboard.</p>
+    <div class="field"><label>Containers you own (by size)</label><div id="fleetRows" class="form-row"></div></div>
+    <div class="form-row">
+      <div><label for="rentalDays">Pickup past due after (days out)</label><input id="rentalDays" type="number" min="1" max="365"></div>
+      <div><label for="followUpDays">Proposal follow-up due after (days)</label><input id="followUpDays" type="number" min="1" max="60"></div>
+    </div>
+    <div class="form-row">
+      <div><label for="openTime">Business hours open</label><input id="openTime" type="time"></div>
+      <div><label for="closeTime">Business hours close</label><input id="closeTime" type="time"></div>
+    </div>
+    <div class="field"><label>Work days (crew availability and response times)</label><div class="days" id="workdays"></div></div>
+    <div class="error" id="settingsError"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" value="cancel" type="submit" formnovalidate>Cancel</button>
+      <button class="btn primary" id="settingsSave" type="button">Save</button>
+    </div>
+  </form>
+</dialog>
+<div class="tooltip" id="tooltip" hidden></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
