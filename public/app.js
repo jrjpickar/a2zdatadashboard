@@ -329,12 +329,23 @@ async function load() {
   state.snap = data.snapshot; state.viewer = data.viewer; state.status = data.status; state.etag = data.snapshot ? `"${data.snapshot.builtAt}-${data.viewer.owner ? 'o' : 'v'}"` : '';
   return changed;
 }
+// Ask GHL (the Custom Page host) for the logged-in user. GHL can be slow to start
+// listening, and the page can sit one frame deeper than expected, so ask the
+// parent and the top window every second for up to 15 s. The answer is encrypted
+// and checked on the server, so accepting it from either frame is safe.
 function askGhl() {
   return new Promise((resolve, reject) => {
-    const t = setTimeout(() => { removeEventListener('message', on); reject(new Error('GHL did not answer. Open the dashboard from its menu item in GHL.')); }, 8000);
-    function on(e) { if (e.source !== window.parent || e.data?.message !== 'REQUEST_USER_DATA_RESPONSE' || !e.data.payload) return; clearTimeout(t); removeEventListener('message', on); resolve(e.data.payload); }
+    const targets = [...new Set([window.parent, window.top].filter(w => w && w !== window))];
+    let timer;
+    const done = () => { clearInterval(timer); clearTimeout(stop); removeEventListener('message', on); };
+    function on(e) {
+      if (!targets.includes(e.source) || e.data?.message !== 'REQUEST_USER_DATA_RESPONSE' || !e.data.payload) return;
+      done(); resolve(e.data.payload);
+    }
+    const ask = () => targets.forEach(w => { try { w.postMessage({ message: 'REQUEST_USER_DATA' }, '*'); } catch {} });
+    const stop = setTimeout(() => { done(); reject(new Error('GHL did not send your user. Open the dashboard from the A2Z Dashboard app menu item (a Custom Page of the Marketplace app), not a custom menu link.')); }, 15000);
     addEventListener('message', on);
-    window.parent.postMessage({ message: 'REQUEST_USER_DATA' }, '*');
+    ask(); timer = setInterval(ask, 1000);
   });
 }
 async function signIn() {
