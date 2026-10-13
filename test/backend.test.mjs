@@ -151,3 +151,13 @@ test('only senior admins manage admins; seniors cannot be removed; admins manage
   assert.equal(applyChange(data(), { action: 'set_role', email: 'maria@a2zcs.net', role: 'viewer' }, senior, cfg).users[0].role, 'viewer');
   assert.equal(applyChange(data(), { action: 'remove', email: 'maria@a2zcs.net' }, senior, cfg).users.length, 0);
 });
+
+import { applyQueueChange } from '../netlify/functions/queue.mjs';
+test('queue overrides validate keys and snooze dates', () => {
+  const now = Date.parse('2026-10-13T00:00:00Z');
+  const m = applyQueueChange({}, { key: 'no-reply:o1', action: 'snooze', until: '2026-10-20', baseline: 'x' }, { name: 'J' }, now);
+  assert.equal(m['no-reply:o1'].action, 'snooze');
+  assert.throws(() => applyQueueChange({}, { key: 'no-reply:o1', action: 'snooze', until: '2026-10-01' }, { name: 'J' }, now), e => e.status === 400);
+  assert.throws(() => applyQueueChange({}, { key: 'bogus', action: 'done' }, { name: 'J' }, now));
+  assert.deepEqual(applyQueueChange(m, { key: 'no-reply:o1', action: 'restore' }, { name: 'J' }, now), {});
+});

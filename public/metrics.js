@@ -212,45 +212,67 @@ export function callsSection(snap, { range, now }) {
   };
 }
 
-// Things to do now (not filtered by period).
-export function actionQueue(snap, { rep, now }) {
+// Things to do now (not filtered by period). Each item has a stable key and the time of the
+// latest GHL activity on it (lastEventAt), so an admin's Done / Dismiss / Snooze holds only
+// until something new happens in GHL, and an item read in GHL conversations drops out.
+export function queueState(snap, { rep, now, overrides = {} }) {
   const idx = buildIndex(snap);
   const tz = idx.tz, s = idx.settings, bdm = businessDayMinutes(s) * s.estimateDays;
   const items = [];
   const since = days => new Date(toMs(now) - days * DAY).toISOString();
+  const latest = (...l) => l.filter(Boolean).sort().pop() || '';
   for (const o of leadOpps(idx, rep)) {
     if (o.status !== 'open') continue;
     const c = idx.contacts.get(o.contactId);
     const name = c?.name || o.contactName || o.name;
-    const base = { oppId: o.id, contactId: o.contactId, name, service: idx.serviceName(o.pipelineId), value: o.value, owner: o.assignedTo, link: idx.contactLink(o.contactId) };
+    const touches = idx.touches(o.contactId);
+    const lastEventAt = latest(touches[touches.length - 1], o.stageChangedAt, o.statusChangedAt, o.updatedAt);
+    const base = { oppId: o.id, contactId: o.contactId, name, service: idx.serviceName(o.pipelineId), value: o.value, owner: o.assignedTo, link: idx.contactLink(o.contactId), lastEventAt };
     const pr = idx.proposalByPipe.get(o.pipelineId);
     const stage = idx.cfg.stages?.[o.stageId];
     const sent = idx.sentAt(o);
     if (o.createdAt >= since(30) && !firstResponse(idx, o)) {
       const age = businessMinutes(o.createdAt, now, s, tz);
-      items.push({ ...base, kind: 'no-reply', label: 'New lead, no reply yet', since: o.createdAt, ageMin: age, overdue: age > 240 });
+      items.push({ ...base, key: `no-reply:${o.id}`, kind: 'no-reply', label: 'New lead, no reply yet', since: o.createdAt, ageMin: age, overdue: age > 240 });
       continue;
     }
     if (pr && stage && stage.position < pr.position && !sent && o.createdAt >= since(60)) {
       const age = businessMinutes(o.createdAt, now, s, tz);
-      if (age > bdm) items.push({ ...base, kind: 'estimate-overdue', label: `Estimate not sent (${s.estimateDays} business day${s.estimateDays > 1 ? 's' : ''})`, since: o.createdAt, ageMin: age, overdue: true });
+      if (age > bdm) items.push({ ...base, key: `estimate-overdue:${o.id}`, kind: 'estimate-overdue', label: `Estimate not sent (${s.estimateDays} business day${s.estimateDays > 1 ? 's' : ''})`, since: o.createdAt, ageMin: age, overdue: true });
       continue;
     }
     if (pr && o.stageId === pr.id && sent) {
       const after = new Date(toMs(sent.at) + 2 * HOUR).toISOString();
-      const followed = idx.touches(o.contactId).some(t => t >= after);
-      if (!followed && toMs(now) - toMs(sent.at) > s.followUpDays * DAY && toMs(now) - toMs(sent.at) < 60 * DAY) items.push({ ...base, kind: 'no-follow-up', label: `Proposal sent, no follow-up in ${s.followUpDays} days`, since: sent.at, ageMin: (toMs(now) - toMs(sent.at)) / MIN, overdue: true });
+      const followed = touches.some(t => t >= after);
+      if (!followed && toMs(now) - toMs(sent.at) > s.followUpDays * DAY && toMs(now) - toMs(sent.at) < 60 * DAY) items.push({ ...base, key: `no-follow-up:${o.id}`, kind: 'no-follow-up', label: `Proposal sent, no follow-up in ${s.followUpDays} days`, since: sent.at, ageMin: (toMs(now) - toMs(sent.at)) / MIN, overdue: true });
     }
   }
   const byPhone = new Map([...idx.contacts.values()].filter(c => c.phone).map(c => [c.phone, c]));
-  if (!rep) for (const c of snap.inboundCalls || []) {
-    if (c.answered || c.calledBackAt || c.at < since(7) || idx.laborerPhones.has(c.from)) continue;
-    const contact = byPhone.get(c.from);
-    items.push({ kind: 'missed-call', label: 'Missed call, not called back', name: contact?.name || c.from, contactId: contact?.id || '', link: idx.contactLink(contact?.id), since: c.at, ageMin: (toMs(now) - toMs(c.at)) / MIN, overdue: true, phone: c.from });
+  if (!rep) {
+    const callsByPhone = groupBy(snap.inboundCalls || [], c => c.from);
+    for (const c of snap.inboundCalls || []) {
+      if (c.answered || c.calledBackAt || c.at < since(7) || idx.laborerPhones.has(c.from)) continue;
+      const contact = byPhone.get(c.from);
+      const lastEventAt = latest(...(callsByPhone.get(c.from) || []).map(x => x.at), ...((snap.callTouches || {})[c.from] || []), ...(contact ? idx.touches(contact.id) : []));
+      items.push({ key: `missed-call:${c.sid}`, kind: 'missed-call', label: 'Missed call, not called back', name: contact?.name || c.from, contactId: contact?.id || '', link: idx.contactLink(contact?.id), since: c.at, ageMin: (toMs(now) - toMs(c.at)) / MIN, overdue: true, phone: c.from, lastEventAt });
+    }
   }
   const order = { 'missed-call': 0, 'no-reply': 1, 'estimate-overdue': 2, 'no-follow-up': 3 };
-  return items.sort((a, b) => order[a.kind] - order[b.kind] || (a.since < b.since ? -1 : 1));
+  items.sort((a, b) => order[a.kind] - order[b.kind] || (a.since < b.since ? -1 : 1));
+  const out = { active: [], snoozed: [], closed: [], read: [] };
+  const conv = snap.conversationState || {};
+  for (const i of items) {
+    const ov = overrides[i.key];
+    const fresh = ov && (!i.lastEventAt || i.lastEventAt <= ov.baseline);
+    if (fresh && (ov.action === 'done' || ov.action === 'dismiss')) { out.closed.push({ ...i, override: ov }); continue; }
+    if (fresh && ov.action === 'snooze' && ov.until > new Date(toMs(now)).toISOString()) { out.snoozed.push({ ...i, override: ov }); continue; }
+    const cs = i.contactId && conv[i.contactId];
+    if (cs && cs.unread === 0 && cs.last && cs.last >= new Date(toMs(i.since) - HOUR).toISOString()) { out.read.push({ ...i, readAt: cs.last }); continue; }
+    out.active.push(fresh && ov.action === 'snooze' ? { ...i, snoozeEnded: ov.until } : i);
+  }
+  return out;
 }
+export const actionQueue = (snap, opts) => queueState(snap, opts).active;
 
 // ---------- estimates & pipeline ----------
 export function estimatesSection(snap, { range, rep, now }) {
@@ -258,8 +280,15 @@ export function estimatesSection(snap, { range, rep, now }) {
   const tz = idx.tz, s = idx.settings, bdm = businessDayMinutes(s) * s.estimateDays;
   const jobOpps = idx.opps.filter(o => idx.jobPipes.has(o.pipelineId) && !idx.isLaborer(idx.contacts.get(o.contactId)) && idx.repMatch(o, rep));
   const sentRows = [];
-  for (const o of jobOpps) { const sa = idx.sentAt(o); if (sa && inRange(localDate(sa.at, tz), range)) sentRows.push({ o, sentAt: sa.at, src: sa.src, mins: businessMinutes(o.createdAt, sa.at, s, tz) }); }
-  const timed = sentRows.filter(r => r.src !== 'baseline' && r.o.createdAt);
+  for (const o of jobOpps) { const sa = idx.sentAt(o); if (sa && inRange(localDate(sa.at, tz), range)) sentRows.push({ o, sentAt: sa.at, src: sa.src }); }
+  // Turnaround / sent-within: opportunities CREATED in the period. Counted = proposal sent, or still
+  // open, unsent and past the deadline (a miss). Not counted yet: unsent but still inside the deadline,
+  // or closed without a proposal (booked or lost before an estimate was needed).
+  const created = jobOpps.filter(o => inRange(localDate(o.createdAt, tz), range));
+  const turn = created.map(o => { const sa = idx.sentAt(o); return { o, sa, mins: sa ? businessMinutes(o.createdAt, sa.at, s, tz) : null, age: businessMinutes(o.createdAt, now, s, tz, bdm + 1) }; });
+  const timed = turn.filter(r => r.sa);
+  const missed = turn.filter(r => !r.sa && r.o.status === 'open' && r.age > bdm);
+  const pending = turn.filter(r => !r.sa && r.o.status === 'open' && r.age <= bdm);
   const closed = jobOpps.filter(o => (o.status === 'won' || o.status === 'lost') && inRange(localDate(o.statusChangedAt || o.updatedAt, tz), range));
   const won = closed.filter(o => o.status === 'won');
   const winSplit = key => [...groupBy(closed, key)].map(([k, l]) => {
@@ -286,7 +315,7 @@ export function estimatesSection(snap, { range, rep, now }) {
   const wonService = [...groupBy(won.filter(o => idx.servicePipes.includes(o.pipelineId) || o.pipelineId === idx.P.changeOrders), o => idx.serviceName(o.pipelineId))].map(([k, l]) => ({ key: k, count: l.length, value: sum(l, o => o.value), avg: sum(l, o => o.value) / l.length }));
   return {
     sent: sentRows.length, sentValue: sum(sentRows, r => r.o.value),
-    turnaround: { median: median(timed.map(r => r.mins)), withinDay: ratio(timed.filter(r => r.mins <= bdm).length, timed.length), timed: timed.length, days: s.estimateDays },
+    turnaround: { median: median(timed.map(r => r.mins)), withinDay: ratio(timed.filter(r => r.mins <= bdm).length, timed.length + missed.length), timed: timed.length + missed.length, sent: timed.length, missed: missed.length, pending: pending.length, created: created.length, days: s.estimateDays },
     won: won.filter(o => o.pipelineId !== idx.P.changeOrders).length, changeOrdersWon: won.filter(o => o.pipelineId === idx.P.changeOrders).length,
     revenue: sum(won, o => o.value), lostCount: lost.length,
     winRate: ratio(won.length, closed.length), winRateValue: ratio(sum(won, o => o.value), sum(closed, o => o.value)),
@@ -384,12 +413,34 @@ export function jobsSection(snap, { range, now }) {
     return { j, planned, closed, onTime: planned ? closed <= planned : null };
   });
   const known = onTimeRows.filter(r => r.onTime !== null);
-  const valueOf = j => j.value || idx.opps.find(o => o.id === j.jobId)?.value || 0;
-  const openJobs = jobs.filter(j => j.active && !j.status);
+  // Open backlog = jobs still on the board: GHL shows them won in a board stage (or any won
+  // change order), or they're scheduled today or later. Old rows the board no longer shows
+  // (moved on in GHL but never clicked Completed) don't count.
+  const oppById = new Map(idx.opps.map(o => [o.id, o]));
+  const boardStages = new Set(idx.cfg.boardStageIds || []);
+  const onBoard = j => {
+    const o = oppById.get(j.jobId);
+    if (o) return o.status === 'won' && (o.pipelineId === idx.P.changeOrders || !boardStages.size || boardStages.has(o.stageId));
+    return (j.reportEndDate || j.reportDate || '') >= today;
+  };
+  const valueOf = j => j.value || oppById.get(j.jobId)?.value || 0;
+  const openJobs = jobs.filter(j => j.active && !j.status && onBoard(j));
   const openValue = sum(openJobs, valueOf);
+  // Pace = work finished per week over the last 8 full weeks: invoiced on the Ledger when it's
+  // connected (every finished job gets invoiced), else jobs closed as Completed on the board.
   const weeks = []; for (let i = 7; i >= 0; i--) weeks.push(addDays(mondayOf(today), -7 * (i + 1)));
-  const weekly = weeks.map(w => ({ week: w, value: sum(jobs.filter(j => j.status === 'completed' && localDate(j.closedAt, tz) >= w && localDate(j.closedAt, tz) < addDays(w, 7)), valueOf), count: jobs.filter(j => j.status === 'completed' && localDate(j.closedAt, tz) >= w && localDate(j.closedAt, tz) < addDays(w, 7)).length }));
+  const inWeek = (d, w) => d >= w && d < addDays(w, 7);
+  const L = snap.ledger;
+  const invoiced = L ? Object.keys({ ...(L.invoiceStages || {}), ...(L.invoiceStageEvents || {}) }).map(id => {
+    const doc = (L.invoices || []).find(i => i.opportunityId === id), ev = (L.invoiceStageEvents || {})[id] || {};
+    return { date: doc?.date || (ev.sent ? localDate(ev.sent, tz) : ''), value: doc?.total || oppById.get(id)?.value || 0, stage: (L.invoiceStages || {})[id] };
+  }).filter(x => x.date && x.stage !== 'draft' && x.stage !== 'hidden') : [];
+  const completedJobs = jobs.filter(j => j.status === 'completed').map(j => ({ date: localDate(j.closedAt, tz), value: valueOf(j) }));
+  const paceSource = invoiced.filter(x => x.date >= weeks[0]).length >= 3 ? 'invoiced' : 'completed';
+  const paceRows = paceSource === 'invoiced' ? invoiced : completedJobs;
+  const weekly = weeks.map(w => ({ week: w, value: sum(paceRows.filter(x => inWeek(x.date, w)), x => x.value), count: paceRows.filter(x => inWeek(x.date, w)).length }));
   const avgWeekly = sum(weekly, w => w.value) / weekly.length;
+  const paceJobs = sum(weekly, w => w.count);
   const futureCrewDays = sum(days.filter(x => x.date > today), x => x.crew.length);
   const pastWeeksCrewDays = sum(days.filter(x => x.date < mondayOf(today) && x.date >= addDays(mondayOf(today), -28)), x => x.crew.length) / 4;
   // Trucks: every logistics run with a vehicle on it.
@@ -411,7 +462,7 @@ export function jobsSection(snap, { range, now }) {
     scheduled: scheduledIds.size, completed: completed.length, cancelled: jobs.filter(j => j.status === 'cancelled' && inRange(localDate(j.closedAt, tz), range)).length,
     onTimeRate: ratio(known.filter(r => r.onTime).length, known.length), onTimeKnown: known.length, late: onTimeRows.filter(r => r.onTime === false),
     scheduledByKind: [...kinds].map(([k, l]) => ({ key: k, count: l.length })),
-    openJobs: openJobs.length, openValue, avgWeeklyCompleted: avgWeekly, backlogWeeks: avgWeekly > 0 ? openValue / avgWeekly : null,
+    openJobs: openJobs.length, openValue, avgWeeklyCompleted: avgWeekly, paceSource, paceJobs, backlogWeeks: avgWeekly > 0 && paceJobs >= 3 ? openValue / avgWeekly : null,
     futureCrewDays, avgWeeklyCrewDays: pastWeeksCrewDays, backlogWeeksCrew: pastWeeksCrewDays > 0 ? futureCrewDays / pastWeeksCrewDays : null,
     weekly, trucks, truckDays, loads: sum(trucks, t => t.loads), loadsPerTruckDay: truckDays ? sum(trucks, t => t.loads) / truckDays : null,
     revenuePerTruckDay: truckDays ? sum(trucks, t => t.revenue) / truckDays : null, available: !!snap.dispatch

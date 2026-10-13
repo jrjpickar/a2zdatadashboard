@@ -4,7 +4,7 @@ import { barChart, barCell, attachTooltips, esc } from './charts.js';
 const $ = id => document.getElementById(id);
 const TOKEN_KEY = 'a2z-kpi-token';
 const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} }, del(k) { try { localStorage.removeItem(k); } catch {} } };
-const state = { snap: null, viewer: null, status: null, etag: '', period: store.get('kpi-period') || 'mtd', rep: store.get('kpi-rep') || '', tab: store.get('kpi-tab') || 'overview', queueKind: 'all', refreshing: false };
+const state = { overrides: {}, snap: null, viewer: null, status: null, etag: '', period: store.get('kpi-period') || 'mtd', rep: store.get('kpi-rep') || '', tab: store.get('kpi-tab') || 'overview', queueKind: 'all', refreshing: false };
 
 // ---------- formatting ----------
 const nf0 = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
@@ -61,7 +61,7 @@ function opts() {
 }
 
 function renderOverview() {
-  const o = opts(), ov = M.overview(state.snap, o), e = M.estimatesSection(state.snap, o), l = M.leadsSection(state.snap, o), q = M.actionQueue(state.snap, o), c = M.containersSection(state.snap, o), cr = M.crewsSection(state.snap, o);
+  const o = opts(), ov = M.overview(state.snap, o), e = M.estimatesSection(state.snap, o), l = M.leadsSection(state.snap, o), q = M.actionQueue(state.snap, { ...o, overrides: state.overrides }), c = M.containersSection(state.snap, o), cr = M.crewsSection(state.snap, o);
   return `<div class="kpis">
     ${kpi('New leads', int(ov.leads), 'Demo, labor and container requests')}
     ${kpi('Estimates sent', int(ov.estimatesSent), `Proposal / change order sent · ${money(e.sentValue)}`)}
@@ -80,18 +80,38 @@ function renderOverview() {
   </div>`;
 }
 
-function queueList(items) {
-  if (!items.length) return '<div class="empty">Nothing waiting. Nice.</div>';
-  return items.map(i => `<div class="queue-item">${pill(i.label.split(' (')[0].split(',')[0], i.kind === 'missed-call' || i.kind === 'no-reply' ? 'crit' : 'warn')}
-    <div><div>${link(i.link, i.kind === 'missed-call' && !i.contactId ? phone(i.name) : i.name)}${i.value ? ` · ${money(i.value)}` : ''}</div><div class="what">${esc(i.label)}${i.service ? ' · ' + esc(i.service) : ''}${i.owner ? ' · ' + esc(userName(i.owner)) : ''}</div></div>
-    <div class="age">${i.kind === 'no-reply' || i.kind === 'estimate-overdue' ? busAge(i.ageMin) : mins(i.ageMin)}</div></div>`).join('');
+function queueList(items, { edit = false } = {}) {
+  if (!items.length) return '<div class="empty">Nothing here. Nice.</div>';
+  const admin = edit && state.viewer?.owner;
+  const today = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+  return items.map(i => {
+    let status = '';
+    if (i.override) status = `<div class="what">${i.override.action === 'snooze' ? `Snoozed until ${esc(shortDate(i.override.until))}` : i.override.action === 'done' ? 'Marked done' : 'Dismissed'} by ${esc(i.override.by)} · ${esc(when(i.override.at))}</div>`;
+    if (i.readAt) status = `<div class="what">Read in GHL (conversation opened) · last message ${esc(when(i.readAt))}</div>`;
+    if (i.snoozeEnded) status = `<div class="what">Snooze ended ${esc(shortDate(i.snoozeEnded))}</div>`;
+    const data = `data-qkey="${esc(i.key)}" data-qbase="${esc(i.lastEventAt || '')}" data-qlabel="${esc(i.label + ': ' + i.name)}"`;
+    const controls = !admin ? '' : i.override
+      ? `<div class="q-actions"><button class="btn" type="button" data-qact="restore" ${data}>Restore</button></div>`
+      : i.readAt ? '' : `<div class="q-actions"><button class="btn" type="button" data-qact="done" ${data}>Done</button><button class="btn" type="button" data-qact="dismiss" ${data}>Dismiss</button><label class="q-snooze">Snooze<input type="date" min="${today}" data-qact="snooze" ${data}></label></div>`;
+    return `<div class="queue-item">${pill(i.label.split(' (')[0].split(',')[0], i.kind === 'missed-call' || i.kind === 'no-reply' ? 'crit' : 'warn')}
+    <div><div>${link(i.link, i.kind === 'missed-call' && !i.contactId ? phone(i.name) : i.name)}${i.value ? ` · ${money(i.value)}` : ''}</div><div class="what">${esc(i.label)}${i.service ? ' · ' + esc(i.service) : ''}${i.owner ? ' · ' + esc(userName(i.owner)) : ''}</div>${status}${controls}</div>
+    <div class="age">${i.kind === 'no-reply' || i.kind === 'estimate-overdue' ? busAge(i.ageMin) : mins(i.ageMin)}</div></div>`;
+  }).join('');
 }
+async function queueAction(el, action, until) {
+  try { state.overrides = await api('/api/queue', { method: 'POST', body: JSON.stringify({ key: el.dataset.qkey, action, until, baseline: el.dataset.qbase, label: el.dataset.qlabel }) }); render(); }
+  catch (e) { alertBanner(e.message); }
+}
+document.addEventListener('click', e => { const b = e.target.closest('button[data-qact]'); if (b) queueAction(b, b.dataset.qact); });
+document.addEventListener('change', e => { const d = e.target.closest('input[data-qact="snooze"]'); if (d && d.value) queueAction(d, 'snooze', `${d.value}T15:00:00Z`); });
+async function loadOverrides() { try { state.overrides = await api('/api/queue'); } catch { state.overrides = state.overrides || {}; } }
 const userName = id => state.snap?.users?.find(u => u.id === id)?.name || '';
 
 function renderLeads() {
-  const o = opts(), l = M.leadsSection(state.snap, o), calls = M.callsSection(state.snap, o), q = M.actionQueue(state.snap, o);
+  const o = opts(), l = M.leadsSection(state.snap, o), calls = M.callsSection(state.snap, o), qs = M.queueState(state.snap, { ...o, overrides: state.overrides }), q = qs.active;
   const kinds = [['all', 'All'], ['missed-call', 'Missed calls'], ['no-reply', 'No reply'], ['estimate-overdue', 'Estimate overdue'], ['no-follow-up', 'No follow-up']];
-  const shown = state.queueKind === 'all' ? q : q.filter(i => i.kind === state.queueKind);
+  const extra = [['snoozed', 'Snoozed', qs.snoozed], ['closed', 'Done / dismissed', qs.closed], ['read', 'Read in GHL', qs.read]];
+  const shown = state.queueKind === 'all' ? q : extra.find(x => x[0] === state.queueKind)?.[2] || q.filter(i => i.kind === state.queueKind);
   return `<div class="kpis">
     ${kpi('New leads', int(l.total), `${int(l.response.awaiting)} still waiting for a reply`)}
     ${kpi('Median first response', mins(l.response.median), 'Business hours, first human call / text / email')}
@@ -106,8 +126,8 @@ function renderLeads() {
     ${card(12, 'Lead funnel', 'Leads created in this period and where they are now · laborers never count', funnelHtml(M.leadFunnel(state.snap, o)))}
   </div><div style="height:14px"></div>
   <div class="grid">
-    ${card(12, 'Action queue', 'Leads with no reply, estimates overdue, proposals with no follow-up, missed calls not called back',
-      `<div class="chips" id="queueChips">${kinds.map(([k, t]) => `<button type="button" data-kind="${k}" aria-pressed="${state.queueKind === k}">${t} (${k === 'all' ? q.length : q.filter(i => i.kind === k).length})</button>`).join('')}</div>${queueList(shown.slice(0, 60))}`, shown.length > 60 ? `Showing 60 of ${shown.length}.` : '')}
+    ${card(12, 'Action queue', `Leads with no reply, estimates overdue, proposals with no follow-up, missed calls not called back. ${state.viewer?.owner ? 'Done, Dismiss and Snooze hold until something new happens on that lead in GHL. ' : ''}Conversations opened (read) in GHL drop out on the next sync.`,
+      `<div class="chips" id="queueChips">${kinds.map(([k, t]) => `<button type="button" data-kind="${k}" aria-pressed="${state.queueKind === k}">${t} (${k === 'all' ? q.length : q.filter(i => i.kind === k).length})</button>`).join('')}<span style="width:10px"></span>${extra.map(([k, t, l]) => `<button type="button" data-kind="${k}" aria-pressed="${state.queueKind === k}">${t} (${l.length})</button>`).join('')}</div>${queueList(shown.slice(0, 60), { edit: true })}`, shown.length > 60 ? `Showing 60 of ${shown.length}.` : '')}
     ${card(4, 'Leads by source', 'Repeat = they had a won job before', countTable(l.bySource))}
     ${card(4, 'Leads by service line', '', countTable(l.byService, { label: 'Service', valueCol: true }))}
     ${card(4, 'Leads by customer type', 'GHL contact type', countTable(l.byType, { label: 'Type' }))}
@@ -126,8 +146,8 @@ function renderEstimates() {
   const maxStage = Math.max(0, ...e.byStage.map(s => s.value));
   return `<div class="kpis">
     ${kpi('Estimates sent', int(e.sent), money(e.sentValue))}
-    ${kpi(`Sent within ${e.turnaround.days} business days`, pct(e.turnaround.withinDay), `${int(e.turnaround.timed)} with a known request time`, e.turnaround.withinDay != null && e.turnaround.withinDay < 0.8 ? 'warn' : '')}
-    ${kpi('Median turnaround', mins(e.turnaround.median), 'Business hours, lead to proposal sent')}
+    ${kpi(`Sent within ${e.turnaround.days} business days`, pct(e.turnaround.withinDay), `Of opportunities created this period: ${int(e.turnaround.sent)} sent · ${int(e.turnaround.missed)} overdue · ${int(e.turnaround.pending)} still inside the window`, e.turnaround.withinDay != null && e.turnaround.withinDay < 0.8 ? 'warn' : '')}
+    ${kpi('Median turnaround', mins(e.turnaround.median), 'Business hours, opportunity created to proposal sent')}
     ${kpi('Win rate', pct(e.winRate), `${int(e.won + e.changeOrdersWon)} won · ${int(e.lostCount)} lost`)}
     ${kpi('Win rate by dollars', pct(e.winRateValue), 'Won value ÷ decided value')}
     ${kpi('Revenue booked', money(e.revenue), 'Incl. change orders')}
@@ -175,14 +195,14 @@ function renderJobs() {
     ${kpi('Jobs scheduled', int(j.scheduled), j.scheduledByKind.map(k => `${int(k.count)} ${k.key.toLowerCase()}`).join(' · '))}
     ${kpi('Jobs completed', int(j.completed), j.cancelled ? `${int(j.cancelled)} cancelled` : '')}
     ${kpi('Finished on scheduled date', pct(j.onTimeRate), `${int(j.onTimeKnown)} completed jobs with a scheduled end`, j.onTimeRate != null && j.onTimeRate < 0.8 ? 'warn' : '')}
-    ${kpi('Backlog', j.backlogWeeks == null ? '—' : dec(j.backlogWeeks) + ' weeks', `${money(j.openValue)} booked ÷ ${money(j.avgWeeklyCompleted)}/week`)}
+    ${kpi('Backlog', j.backlogWeeks == null ? '—' : dec(j.backlogWeeks) + ' weeks', j.backlogWeeks == null ? `${money(j.openValue)} booked · not enough finished work in the last 8 weeks to estimate pace` : `${money(j.openValue)} on the board ÷ ${money(j.avgWeeklyCompleted)}/week ${j.paceSource === 'invoiced' ? 'invoiced' : 'completed'}`)}
     ${kpi('Crew backlog', j.backlogWeeksCrew == null ? '—' : dec(j.backlogWeeksCrew) + ' weeks', `${int(j.futureCrewDays)} crew-days scheduled ahead`)}
     ${kpi('Loads per truck per day', dec(j.loadsPerTruckDay), `${dec(j.loads)} loads · ${int(j.truckDays)} truck-days`)}
     ${kpi('Revenue per truck-day', money(j.revenuePerTruckDay), 'Move value spread over its runs')}
     ${kpi('Open jobs', int(j.openJobs), 'On the dispatch board now')}
   </div>
   <div class="grid">
-    ${card(7, 'Completed per week', 'Job value closed as Completed on the board · last 8 weeks', barChart(j.weekly.map(w => ({ label: w.week, tip: `Week of ${shortDate(w.week)} · ${w.count} jobs`, value: w.value })), { format: (v, axis) => axis ? moneyShort(v) : money(v), labelFormat: shortDate }))}
+    ${card(7, j.paceSource === 'invoiced' ? 'Invoiced per week' : 'Completed per week', `${j.paceSource === 'invoiced' ? 'Job value invoiced on the Ledger' : 'Job value closed as Completed on the board'} · last 8 weeks · this is the backlog pace`, barChart(j.weekly.map(w => ({ label: w.week, tip: `Week of ${shortDate(w.week)} · ${w.count} jobs`, value: w.value })), { format: (v, axis) => axis ? moneyShort(v) : money(v), labelFormat: shortDate }))}
     ${card(5, 'Late finishes', 'Completed after the scheduled end date', table([{ label: 'Job', get: r => r.j.jobAddress || r.j.clientName || r.j.jobId }, { label: 'Scheduled end', get: r => shortDate(r.planned) }, { label: 'Closed', get: r => shortDate(r.closed) }], j.late, { scroll: true, empty: 'Every completed job finished on time.' }))}
     ${card(12, 'Trucks', 'Logistics runs with a vehicle on them', table([{ label: 'Truck', get: r => r.name }, { label: 'Days used', num: true, get: r => int(r.days) }, { label: 'Loads', html: r => barCell(r.loads, maxLoads, dec(r.loads)) }, { label: 'Loads / day', num: true, get: r => dec(r.loadsPerDay) }, { label: 'Revenue / day', num: true, get: r => money(r.revenuePerDay) }], j.trucks, { empty: 'No truck runs in this period.' }), 'Grading and demo haul-offs only count when they are run as logistics moves with a truck assigned.')}
   </div>`;
@@ -267,7 +287,8 @@ function renderQuality() {
     ['First response', 'First human outbound touch to the contact: a Twilio call, or an SMS / email / call in GHL conversations (workflow and bulk messages excluded), or an answered inbound call from them. Touches up to 1 hour before the lead was created count (the call that created it). Measured in business hours.'],
     ['Inbound calls', 'Twilio calls into A2Z numbers. Answered = the forwarded leg connected (or, with no forwarding, the call lasted the minimum seconds). Called back = any later outbound Twilio call to that number.'],
     ['Estimate sent', 'The opportunity entered Proposal Sent (Change Order Sent for change orders). Stage history is recorded by this dashboard from ' + (dq.history.stageTrackingSince ? shortDate(dq.history.stageTrackingSince) : 'its first sync') + '; earlier proposals use GHL\'s last stage change.'],
-    ['Within 3 business days', 'Proposal sent within three business days (business hours) after the lead was created. Change the number in Settings.'],
+    ['Sent within / turnaround', 'Opportunities created in the period: share whose proposal was sent within the business-day target (3 by default, Settings) of the opportunity being created. Still-open ones past the target count as misses; ones still inside it, or closed without a proposal, are left out. Turnaround = business hours from creation to Proposal Sent.'],
+    ['Action queue edits', 'Admins can mark an item Done, Dismiss it or Snooze it to a date. The edit holds until GHL shows something new on that lead or caller (a call, text, email, stage or status change); then the item comes back if it still applies. A conversation opened (read) in GHL also takes its item out of the queue.'],
     ['Jobs won / revenue booked', 'Opportunities marked Won, dated by GHL\'s status change. Revenue = their value. Win rate = won ÷ (won + lost) decided in the period.'],
     ['Containers out', 'Container drops minus pickups per customer from the dispatch board\'s runs (Reset day / Complete). Swaps and dump & returns keep the count. Quantity, not yards.'],
     ['Crew utilization', 'Crew-days on jobs (each worker each day, from Complete EOD Sheet logs plus scheduled days) ÷ active laborers × work days, up to today.'],
@@ -470,8 +491,9 @@ async function boot() {
     catch (e) { if (e.status === 401 || e.status === 403) { store.del(TOKEN_KEY); await signIn(); continue; } $('signin').hidden = false; $('signinMsg').textContent = 'Could not load the dashboard: ' + e.message; return; }
   }
   $('signin').hidden = true; $('app').hidden = false;
+  await loadOverrides();
   render();
-  setInterval(async () => { if (document.hidden || state.refreshing) return; try { if (await load()) render(); else $('freshness').textContent = `Updated ${ago(state.snap?.builtAt)}`; } catch {} }, 5 * 60000);
+  setInterval(async () => { if (document.hidden || state.refreshing) return; try { await loadOverrides(); if (await load() || state.tab === 'leads' || state.tab === 'overview') render(); else $('freshness').textContent = `Updated ${ago(state.snap?.builtAt)}`; } catch {} }, 5 * 60000);
 }
 
 // ---------- events ----------

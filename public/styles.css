@@ -185,3 +185,8 @@ input[type="number"], input[type="time"], input[type="email"], input[type="passw
 @media (max-width: 700px) { .fn { grid-template-columns: 92px minmax(0, 1fr) 64px; column-gap: 10px; } .fn-label span { display: none; } .fn-out b { font-size: 15px; } .fn-bar { height: 44px; min-width: 56px; } }
 .role-badge { display: inline-block; margin-left: 6px; font-size: 10px; font-weight: 750; letter-spacing: .06em; padding: 2px 7px; border-radius: 999px; background: rgba(255,255,255,.18); border: 1px solid rgba(253,186,116,.4); color: var(--brand-200); }
 td select { padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+
+.q-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.q-actions .btn { padding: 3px 10px; font-size: 12px; }
+.q-snooze { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); border: 1px solid var(--border); border-radius: 8px; padding: 2px 4px 2px 10px; background: var(--surface); }
+.q-snooze input { border: 0; background: transparent; font-size: 12px; padding: 2px; }

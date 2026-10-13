@@ -143,3 +143,55 @@ test('estimates: within N business days follows the setting (default 3)', () => 
   assert.equal(M.estimatesSection(mk(1), o).turnaround.withinDay, 0);
   assert.equal(M.estimatesSection(mk(3), o).turnaround.withinDay, 1);
 });
+
+test('backlog counts only jobs still on the board and paces on invoiced work', () => {
+  const won = (id, stageId, value) => ({ id, pipelineId: 'L', stageId, status: 'won', value, createdAt: '2026-08-01T16:00:00Z', contactId: 'c' });
+  const snap = base({
+    config: { ...base().config, boardStageIds: ['board'] },
+    opportunities: [won('j1', 'board', 1000), won('stale', 'invoice', 50000)],
+    dispatch: { jobs: [{ jobId: 'j1', active: true, status: '', value: 1000 }, { jobId: 'stale', active: true, status: '', value: 50000 }], moves: [], moveRuns: [], jobDays: [] },
+    ledger: { invoiceStages: { a: 'paid', b: 'sent', c: 'sent', d: 'sent' }, invoiceStageEvents: {}, invoices: ['a', 'b', 'c', 'd'].map((id, i) => ({ opportunityId: id, date: `2026-09-${10 + i * 5}`, total: 1000 })), bills: [], payroll: [] }
+  });
+  const j = M.jobsSection(snap, { range: { from: '2026-10-01', to: '2026-10-12' }, now: NOW });
+  assert.equal(j.openValue, 1000, 'stale row the board no longer shows is left out');
+  assert.equal(j.paceSource, 'invoiced');
+  assert.equal(j.avgWeeklyCompleted, 500);
+  assert.equal(j.backlogWeeks, 2);
+});
+
+test('queue: admin Done/Snooze hold until new GHL activity; read conversations drop out', () => {
+  const snap = base({
+    contacts: [{ id: 'c1', type: 'home-owner' }, { id: 'c2', type: 'home-owner' }, { id: 'c3', type: 'home-owner' }],
+    opportunities: ['c1', 'c2', 'c3'].map(id => ({ id: 'o' + id, pipelineId: 'D', stageId: 'Dn', status: 'open', createdAt: '2026-10-12T16:00:00Z', updatedAt: '2026-10-12T16:00:00Z', contactId: id })),
+    conversationState: { c3: { unread: 0, last: '2026-10-12T16:05:00Z' } }
+  });
+  const o = { rep: '', now: NOW };
+  const all = M.queueState(snap, o);
+  assert.equal(all.active.length, 2);
+  assert.equal(all.read[0].contactId, 'c3');
+  const k1 = all.active.find(i => i.contactId === 'c1');
+  const overrides = { [k1.key]: { action: 'done', baseline: k1.lastEventAt, by: 'J', at: '2026-10-12T19:00:00Z' }, 'no-reply:oc2': { action: 'snooze', until: '2026-10-20T15:00:00Z', baseline: '2026-10-12T16:00:00Z', by: 'J', at: '2026-10-12T19:00:00Z' } };
+  const held = M.queueState(snap, { ...o, overrides });
+  assert.deepEqual([held.active.length, held.closed.length, held.snoozed.length], [0, 1, 1]);
+  // New activity in GHL (opportunity updated after the edit) brings it back.
+  snap.opportunities[0].updatedAt = '2026-10-12T19:30:00Z';
+  const back = M.queueState({ ...snap }, { ...o, overrides });
+  assert.ok(back.active.some(i => i.contactId === 'c1'));
+});
+
+test('sent within: cohort is opportunities created in the period, overdue unsent ones count as misses', () => {
+  const snap = base({
+    settings: { ...S, estimateDays: 1 },
+    contacts: [{ id: 'c', type: 'developer' }],
+    opportunities: [
+      { id: 'a', pipelineId: 'D', stageId: 'Dp', status: 'open', createdAt: '2026-10-05T16:00:00Z', contactId: 'c' },
+      { id: 'b', pipelineId: 'D', stageId: 'Dn', status: 'open', createdAt: '2026-10-06T16:00:00Z', contactId: 'c' },
+      { id: 'p', pipelineId: 'D', stageId: 'Dn', status: 'open', createdAt: '2026-10-12T19:00:00Z', contactId: 'c' },
+      { id: 'w', pipelineId: 'D', stageId: 'Dn', status: 'won', createdAt: '2026-10-06T16:00:00Z', statusChangedAt: '2026-10-06T18:00:00Z', contactId: 'c' },
+      { id: 'old', pipelineId: 'D', stageId: 'Dp', status: 'open', createdAt: '2026-09-01T16:00:00Z', contactId: 'c' }
+    ],
+    stageEvents: { a: { Dp: { at: '2026-10-05T18:00:00Z', src: 'sync' } }, old: { Dp: { at: '2026-10-02T18:00:00Z', src: 'sync' } } }
+  });
+  const t = M.estimatesSection(snap, { range: { from: '2026-10-01', to: '2026-10-12' }, rep: '', now: NOW }).turnaround;
+  assert.deepEqual([t.sent, t.missed, t.pending, t.withinDay, t.median], [1, 1, 1, 0.5, 120]);
+});

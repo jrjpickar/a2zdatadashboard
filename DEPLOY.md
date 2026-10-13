@@ -54,6 +54,10 @@ Without this, stage changes are noticed on the next sync (≤30 min). For exact 
 - Add people on the **Users** tab (pick a GHL user or type an email). Anyone not on the list who opens the dashboard is refused and shows up under "Asked for access" with a one-click Add.
 - A PIN sign-in is always viewer level.
 
+## Action queue edits (admins)
+
+Done, Dismiss and Snooze (to a date) on each queue item. An edit holds until GHL shows something new on that lead or caller (call, text, email, stage or status change), then the item comes back if it still applies. Edits are shared and kept 180 days. A conversation opened (read) in GHL also takes its item out ("Read in GHL" chip); this needs the token's conversations.readonly scope.
+
 ## What to know
 
 - **History starts at deploy for three things.** GHL keeps no stage history, so Proposal Sent dates are recorded from the first sync (earlier ones use GHL's last stage change). Hire dates (laborer turned warm/hot/VIP) start at the first sync; laborers already warm+ count as active with no hire date. Container/truck runs are exact from dispatch 1.9; earlier closed container moves use their close date.

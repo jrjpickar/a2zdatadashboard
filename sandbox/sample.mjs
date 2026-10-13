@@ -145,6 +145,8 @@ export function sampleSnapshot(now = Date.now(), seed = 7) {
   }
   const payroll = [];
   for (let w = 52; w >= 1; w--) { const end = now - w * 7 * DAY; const gross = Math.round(9000 + r() * 9000); payroll.push({ id: `p${w}`, periodStart: day(end - 6 * DAY), periodEnd: day(end), payDate: day(end + 5 * DAY), grossPayroll: gross, employerBurden: Math.round(gross * 0.3), totalCost: Math.round(gross * 1.3), hours: Math.round(gross / 24) }); }
+  const conversationState = {};
+  for (const c of contacts) if (c.type !== 'laborer' && r() < 0.12) conversationState[c.id] = { unread: 0, last: iso(now - r() * 2 * DAY), dir: 'inbound' };
   const ok = { ok: true, at: iso(now - 4 * 60000), checkedAt: iso(now - 4 * 60000), error: '' };
   return {
     version: 1, sample: true, builtAt: iso(now - 4 * 60000),
@@ -152,7 +154,7 @@ export function sampleSnapshot(now = Date.now(), seed = 7) {
     config: { timeZone: 'America/Los_Angeles', locationId: 'QUcu2PEAxPV1sQm1GQCq', ghlAppUrl: 'https://app.gohighlevel.com', pipelines: P,
       pipelineNames: { [P.demo]: 'Demo', [P.labor]: 'Labor', [P.containers]: 'Containers', [P.changeOrders]: 'Change Orders', [P.hiring]: 'Hiring' },
       stages, proposalStageIds, customerTypes: ['general-contractor', 'developer', 'home-owner'], laborerTypes: ['laborer'], activeTemps: ['warm', 'hot', 'vip'], dormantTemps: ['cold'], contactTypeSource: 'GHL contact type' },
-    users, opportunities, contacts, stageEvents, hireEvents, messageTouches, callTouches, answeredInbound, inboundCalls,
+    users, opportunities, contacts, conversationState, stageEvents, hireEvents, messageTouches, callTouches, answeredInbound, inboundCalls,
     history: { stageTrackingSince: iso(now - 300 * DAY), hireTrackingSince: iso(now - 300 * DAY) },
     dispatch: { serverTime: iso(now), jobs, moves, moveRuns, jobDays, bookings, eodSheets, labor: crewPool.map(c => ({ id: c.id, name: c.name, phone: c.phone })), assets, temperatures: [], health: { makeRuns30d: [], pendingGhlScheduleSyncs: 0 } },
     ledger: { serverTime: iso(now), invoiceStages, invoiceStageEvents, invoices, bills, payroll, ar: [], baselineAsOf: '2026-08-31' },

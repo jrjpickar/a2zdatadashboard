@@ -11,12 +11,17 @@ const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; ch
 let snapshot = sampleSnapshot();
 const owner = process.env.SANDBOX_VIEWER !== '1';
 const role = owner ? 'senior' : 'viewer';
+let overrides = {};
 let access = { users: [{ email: 'maria@example.com', name: 'Maria Lopez', role: 'admin', addedBy: 'Sandbox', addedAt: new Date().toISOString() }, { email: 'dan@example.com', name: 'Dan Ortiz', role: 'viewer', addedBy: 'Sandbox', addedAt: new Date().toISOString() }], requests: [{ email: 'kim@example.com', name: 'Kim Tran', at: new Date().toISOString() }], log: [] };
 const send = (res, status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
 createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/api/session') return send(res, 200, { token: 'sandbox', user: { name: 'Sandbox', email: 'sandbox@example.com' }, owner });
   if (url.pathname === '/api/dashboard-data') return send(res, 200, { viewer: { name: 'Sandbox (sample data)', email: 'sandbox@example.com', owner, role }, snapshot: owner ? snapshot : { ...snapshot, ledger: null }, status: { lastRunAt: snapshot.builtAt } });
+  if (url.pathname === '/api/queue') {
+    if (req.method === 'POST') { let body = ''; for await (const c of req) body += c; const { applyQueueChange } = await import('../netlify/functions/queue.mjs'); try { overrides = applyQueueChange(overrides, JSON.parse(body), { name: 'Sandbox' }); } catch (e) { return send(res, e.status || 400, { error: e.message }); } }
+    return send(res, 200, overrides);
+  }
   if (url.pathname === '/api/access') {
     if (req.method === 'POST') {
       let body = ''; for await (const c of req) body += c;
