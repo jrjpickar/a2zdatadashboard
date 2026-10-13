@@ -148,8 +148,8 @@ test('backlog counts only jobs still on the board and paces on invoiced work', (
   const won = (id, stageId, value) => ({ id, pipelineId: 'L', stageId, status: 'won', value, createdAt: '2026-08-01T16:00:00Z', contactId: 'c' });
   const snap = base({
     config: { ...base().config, boardStageIds: ['board'] },
-    opportunities: [won('j1', 'board', 1000), won('stale', 'invoice', 50000)],
-    dispatch: { jobs: [{ jobId: 'j1', active: true, status: '', value: 1000 }, { jobId: 'stale', active: true, status: '', value: 50000 }], moves: [], moveRuns: [], jobDays: [] },
+    opportunities: [won('j1', 'board', 1000), won('old', 'board', 9000), won('stale', 'invoice', 50000)],
+    dispatch: { jobs: [{ jobId: 'j1', active: true, status: '', value: 1000, updatedAt: '2026-10-10T16:00:00Z' }, { jobId: 'old', active: true, status: '', value: 9000, updatedAt: '2026-06-01T16:00:00Z' }, { jobId: 'stale', active: true, status: '', value: 50000 }], moves: [], moveRuns: [], jobDays: [] },
     ledger: { invoiceStages: { a: 'paid', b: 'sent', c: 'sent', d: 'sent' }, invoiceStageEvents: {}, invoices: ['a', 'b', 'c', 'd'].map((id, i) => ({ opportunityId: id, date: `2026-09-${10 + i * 5}`, total: 1000 })), bills: [], payroll: [] }
   });
   const j = M.jobsSection(snap, { range: { from: '2026-10-01', to: '2026-10-12' }, now: NOW });
@@ -157,6 +157,7 @@ test('backlog counts only jobs still on the board and paces on invoiced work', (
   assert.equal(j.paceSource, 'invoiced');
   assert.equal(j.avgWeeklyCompleted, 500);
   assert.equal(j.backlogWeeks, 2);
+  assert.deepEqual([j.staleCount, j.staleValue], [1, 9000]);
 });
 
 test('queue: admin Done/Snooze hold until new GHL activity; read conversations drop out', () => {

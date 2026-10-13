@@ -424,8 +424,17 @@ export function jobsSection(snap, { range, now }) {
     return (j.reportEndDate || j.reportDate || '') >= today;
   };
   const valueOf = j => j.value || oppById.get(j.jobId)?.value || 0;
-  const openJobs = jobs.filter(j => j.active && !j.status && onBoard(j));
-  const openValue = sum(openJobs, valueOf);
+  // Stale = on the board but nothing scheduled, logged or edited in 60 days and nothing ahead.
+  // Usually finished jobs nobody closed; they'd inflate the backlog, so they're listed separately.
+  const lastDayByJob = new Map();
+  for (const x of days) if (!lastDayByJob.has(x.jobId) || x.date > lastDayByJob.get(x.jobId)) lastDayByJob.set(x.jobId, x.date);
+  const staleCut = addDays(today, -60);
+  const lastActivity = j => [lastDayByJob.get(j.jobId), j.reportEndDate, j.reportDate, localDate(j.updatedAt, tz)].filter(Boolean).sort().pop() || '';
+  const boardJobs = jobs.filter(j => j.active && !j.status && onBoard(j)).map(j => ({ j, value: valueOf(j), last: lastActivity(j), kind: jobKind(idx, j) }));
+  const openRows = boardJobs.filter(r => r.last >= staleCut).sort((a, b) => b.value - a.value);
+  const staleRows = boardJobs.filter(r => r.last < staleCut).sort((a, b) => b.value - a.value);
+  const openJobs = openRows.map(r => r.j);
+  const openValue = sum(openRows, r => r.value);
   // Pace = work finished per week over the last 8 full weeks: invoiced on the Ledger when it's
   // connected (every finished job gets invoiced), else jobs closed as Completed on the board.
   const weeks = []; for (let i = 7; i >= 0; i--) weeks.push(addDays(mondayOf(today), -7 * (i + 1)));
@@ -462,7 +471,7 @@ export function jobsSection(snap, { range, now }) {
     scheduled: scheduledIds.size, completed: completed.length, cancelled: jobs.filter(j => j.status === 'cancelled' && inRange(localDate(j.closedAt, tz), range)).length,
     onTimeRate: ratio(known.filter(r => r.onTime).length, known.length), onTimeKnown: known.length, late: onTimeRows.filter(r => r.onTime === false),
     scheduledByKind: [...kinds].map(([k, l]) => ({ key: k, count: l.length })),
-    openJobs: openJobs.length, openValue, avgWeeklyCompleted: avgWeekly, paceSource, paceJobs, backlogWeeks: avgWeekly > 0 && paceJobs >= 3 ? openValue / avgWeekly : null,
+    openJobs: openJobs.length, openValue, openRows: openRows.slice(0, 100), staleRows: staleRows.slice(0, 100), staleCount: staleRows.length, staleValue: sum(staleRows, r => r.value), avgWeeklyCompleted: avgWeekly, paceSource, paceJobs, backlogWeeks: avgWeekly > 0 && paceJobs >= 3 ? openValue / avgWeekly : null,
     futureCrewDays, avgWeeklyCrewDays: pastWeeksCrewDays, backlogWeeksCrew: pastWeeksCrewDays > 0 ? futureCrewDays / pastWeeksCrewDays : null,
     weekly, trucks, truckDays, loads: sum(trucks, t => t.loads), loadsPerTruckDay: truckDays ? sum(trucks, t => t.loads) / truckDays : null,
     revenuePerTruckDay: truckDays ? sum(trucks, t => t.revenue) / truckDays : null, available: !!snap.dispatch
