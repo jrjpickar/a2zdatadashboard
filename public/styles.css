@@ -190,3 +190,10 @@ td select { padding: 4px 6px; border: 1px solid var(--border); border-radius: 6p
 .q-actions .btn { padding: 3px 10px; font-size: 12px; }
 .q-snooze { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); border: 1px solid var(--border); border-radius: 8px; padding: 2px 4px 2px 10px; background: var(--surface); }
 .q-snooze input { border: 0; background: transparent; font-size: 12px; padding: 2px; }
+
+/* Four funnels side by side: tighter label / outcome columns. */
+.fn-compact { grid-template-columns: minmax(96px, 150px) minmax(0, 1fr) minmax(84px, 120px); column-gap: 12px; }
+.fn-compact .fn-bar { height: 42px; font-size: 18px; min-width: 56px; }
+.fn-compact .fn-gap { height: 22px; }
+.fn-compact .fn-out b { font-size: 16px; }
+.fn-compact .fn-label span { -webkit-line-clamp: 2; font-size: 11px; }

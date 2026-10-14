@@ -51,6 +51,7 @@ const TABS = [
   { id: 'jobs', label: 'Jobs & Trucks', render: renderJobs },
   { id: 'crews', label: 'Crews', render: renderCrews },
   { id: 'hiring', label: 'Hiring', render: renderHiring },
+  { id: 'workflows', label: 'Workflows', render: renderWorkflows },
   { id: 'money', label: 'Money', render: renderMoney, owner: true },
   { id: 'quality', label: 'Data Quality', render: renderQuality },
   { id: 'users', label: 'Users', render: renderUsers, owner: true }
@@ -123,7 +124,7 @@ function renderLeads() {
     ${kpi('Callback time', mins(calls.calledBackMedianMin), `Median, missed calls · ${pct(calls.calledBackWithin60)} within 1 h`)}
   </div>
   <div class="grid">
-    ${card(12, 'Lead funnel', 'Leads created in this period and where they are now · laborers never count', funnelHtml(M.leadFunnel(state.snap, o)))}
+    ${funnelsHtml(o)}
   </div><div style="height:14px"></div>
   <div class="grid">
     ${card(12, 'Action queue', `Leads with no reply, estimates overdue, proposals with no follow-up, missed calls not called back. ${state.viewer?.owner ? 'Done, Dismiss and Snooze hold until something new happens on that lead in GHL. ' : ''}Conversations opened (read) in GHL drop out on the next sync.`,
@@ -251,6 +252,40 @@ function renderHiring() {
   </div>`;
 }
 
+function renderWorkflows() {
+  const o = opts(), w = M.workflowsSection(state.snap, o);
+  const stale = w.lastIngestAt && Date.now() - Date.parse(w.lastIngestAt) > 3 * 3600000;
+  const banner = !w.available
+    ? `<div class="banner">No workflow stats yet. They come from the small script in GHL's agency Custom JS (see DEPLOY.md, "Workflow stats"). It sends data while someone has GHL open.${w.listAvailable ? '' : ' The workflow list also needs the workflows.readonly scope on the GHL token.'}</div>`
+    : stale ? `<div class="banner">Workflow stats last arrived ${esc(ago(w.lastIngestAt))}. They only update while someone has GHL open in a browser.</div>` : '';
+  const maxRuns = Math.max(0, ...w.rows.map(r => r.runs));
+  return `${banner}<div class="kpis">
+    ${kpi('Workflow runs', int(w.runs), 'Contacts that entered a workflow this period')}
+    ${kpi('Finished', pct(w.finishRate), `${int(w.finished)} reached the end`)}
+    ${kpi('Skipped steps', int(w.skipped), w.reasons[0] ? `Top: ${esc(w.reasons[0].key)}` : 'Steps GHL could not do', w.skipped ? 'warn' : '')}
+    ${kpi('Failed steps', int(w.failed), 'Steps that errored', w.failed ? 'crit' : 'good')}
+    ${kpi('Published workflows', int(w.published), `of ${int(w.total)} in GHL`)}
+    ${kpi('Published, no runs', int(w.quiet.length), 'In this period', w.quiet.length ? 'warn' : '')}
+    ${kpi('Trigger match rate', pct(w.triggerRate), w.trigger ? `${int(w.trigger.matched)} of ${int(w.trigger.total)} events started a workflow (30 days)` : 'From the GHL overview')}
+    ${kpi('Feed updated', w.lastIngestAt ? esc(ago(w.lastIngestAt)) : '—', w.pending ? `${int(w.pending)} workflows still catching up` : 'From the GHL Custom JS feed')}
+  </div>
+  <div class="grid">
+    ${card(12, 'Workflows', 'Runs this period, biggest first. Finished = reached the end of the workflow.', table([
+      { label: 'Workflow', get: r => r.name }, { label: 'Status', html: r => pill(r.status === 'published' ? 'Published' : r.status, r.status === 'published' ? 'good' : '') },
+      { label: 'Runs', html: r => barCell(r.runs, maxRuns, int(r.runs)) }, { label: 'Finished', num: true, get: r => pct(r.finishRate) },
+      { label: 'Skipped', num: true, html: r => r.skipped ? `<span style="color:var(--warn)">${int(r.skipped)}</span>` : '0' }, { label: 'Failed', num: true, html: r => r.failed ? `<span style="color:var(--crit)">${int(r.failed)}</span>` : '0' },
+      { label: 'Top issue', get: r => r.topIssue ? `${r.topIssue.reason} (${r.topIssue.count})` : '' }, { label: 'Last run', get: r => r.lastRun ? shortDate(r.lastRun) : '—' }
+    ], w.rows, { scroll: true, empty: 'No workflows yet.' }))}
+    ${card(7, 'Needs attention', 'Skipped or failed steps in this period, newest first', table([
+      { label: 'When', get: r => when(r.at) }, { label: 'Workflow', get: r => r.workflow }, { label: 'Step', get: r => r.step },
+      { label: 'Contact', html: r => link(r.link, r.contactName || r.contactId) }, { label: 'Why', html: r => `${pill(r.status === 'skipped' ? 'Skipped' : 'Failed', r.status === 'skipped' ? 'warn' : 'crit')} ${esc(r.reason)}` }
+    ], w.issues, { scroll: true, empty: 'Nothing skipped or failed in this period.' }))}
+    ${card(5, 'Enrollments per week', 'From GHL\'s automation overview, kept by the dashboard', barChart(w.weeks.map(x => ({ label: x.week, tip: 'Week of ' + shortDate(x.week), value: x.enrollments })), { format: v => int(v), labelFormat: shortDate }))}
+    ${card(6, 'Issues by reason', 'Skipped + failed steps this period', table([{ label: 'Reason', get: r => r.key }, { label: 'Steps', html: r => barCell(r.count, w.reasons[0]?.count || 0, int(r.count)) }], w.reasons, { empty: 'No issues.' }))}
+    ${card(6, 'Published but no runs', 'In this period. Maybe retired, maybe a broken trigger.', table([{ label: 'Workflow', get: r => r.name }, { label: 'Last run', get: r => r.lastRun ? shortDate(r.lastRun) : 'Not seen since the feed started' }], w.quiet, { scroll: true, empty: 'Every published workflow ran.' }))}
+  </div>`;
+}
+
 function renderMoney() {
   const o = opts(), m = M.moneySection(state.snap, o);
   if (!m.available) return unavailable('The Ledger', 'ledger');
@@ -272,7 +307,7 @@ function renderMoney() {
   </div>`;
 }
 
-const FEED_LABELS = { ghl: 'GHL (opportunities, contacts)', conversations: 'GHL conversations (reply times)', twilio: 'Twilio (calls)', dispatch: 'Dispatch board', ledger: 'Ledger', webhook: 'GHL stage webhook (optional)' };
+const FEED_LABELS = { workflowList: 'GHL workflow list', ghl: 'GHL (opportunities, contacts)', conversations: 'GHL conversations (reply times)', twilio: 'Twilio (calls)', dispatch: 'Dispatch board', ledger: 'Ledger', webhook: 'GHL stage webhook (optional)' };
 function renderQuality() {
   const dq = M.dataQuality(state.snap, { now: Date.now() });
   const feeds = Object.entries(FEED_LABELS).map(([k, label]) => {
@@ -313,24 +348,29 @@ function renderQuality() {
 
 // ---------- lead funnel (same shape as the LCP acquisition funnel) ----------
 let funnelAnimated = false;
-function funnelHtml(f) {
-  const defs = {
-    leads: ['New leads', 'Demo, labor and container requests created in the period'],
-    responded: ['Responded', 'A human call, text or email reached them'],
-    estimate: ['Estimate sent', 'Reached Proposal Sent (or was won)'],
-    won: ['Won', 'Marked won in GHL, any time since']
-  };
+const FUNNEL_DEFS = {
+  leads: ['New leads', 'Requests created in the period'],
+  responded: ['Responded', 'A human call, text or email reached them'],
+  estimate: ['Estimate sent', 'Reached Proposal Sent (or was won)'],
+  won: ['Won', 'Marked won in GHL, any time since'],
+  applied: ['Applicants', 'Added to the hiring pipeline in the period'],
+  screened: ['Screened', 'Moved past the first hiring stage, or hired'],
+  hired: ['Hired', 'Temperature warm, hot or VIP'],
+  booked: ['Booked on a job', 'On a crew on the dispatch board since applying']
+};
+function funnelHtml(f, { hiring = false } = {}) {
   const palette = [['#fed7aa', '#431407'], ['#fdba74', '#431407'], ['#ea580c', '#fff'], ['#9a3412', '#fff']];
   const top = Math.max(1, f.stages[0].count);
   const widthOf = v => Math.max(0.1, Math.sqrt(Math.max(0, v) / top));
   const rows = f.stages.map((st, i) => ({ ...st, i, width: widthOf(st.count), color: palette[i] }));
+  const base = hiring ? 'of applicants' : 'of new leads';
   const parts = [];
   rows.forEach((r, i) => {
-    const [label, note] = defs[r.key];
-    const share = i ? (f.stages[0].count ? r.count / f.stages[0].count : null) : 1;
-    const out = `<b>${pct(share)}</b><span>${i ? 'of new leads' : 'of new leads'}${r.value ? ' · ' + moneyShort(r.value) : ''}</span>`;
+    const [label, note] = FUNNEL_DEFS[r.key];
+    const share = f.stages[0].count ? r.count / f.stages[0].count : null;
+    const out = `<b>${pct(share)}</b><span>${base}${r.value ? ' · ' + moneyShort(r.value) : ''}</span>`;
     parts.push(`<div class="fn-label" title="${esc(note)}"><b>${label}</b><span>${esc(note)}</span></div>`
-      + `<div class="fn-track"><div class="fn-bar" style="--w:${(r.width * 100).toFixed(1)}%;--c:${r.color[0]};--ink:${r.color[1]}" title="${esc(`${label}: ${int(r.count)} · ${money(r.value)}`)}">${int(r.count)}</div></div>`
+      + `<div class="fn-track"><div class="fn-bar" style="--w:${(r.width * 100).toFixed(1)}%;--c:${r.color[0]};--ink:${r.color[1]}" title="${esc(`${label}: ${int(r.count)}${r.value ? ' · ' + money(r.value) : ''}`)}">${int(r.count)}</div></div>`
       + `<div class="fn-out">${out}</div>`);
     const next = rows[i + 1];
     if (next) {
@@ -338,15 +378,15 @@ function funnelHtml(f) {
       parts.push(`<div></div><div class="fn-gap"><div class="fn-joint" style="--c:${next.color[0]};clip-path:polygon(${50 - a}% 0,${50 + a}% 0,${50 + b}% 100%,${50 - b}% 100%)"></div>${step != null && step <= 1 ? `<span class="fn-step">↓ ${pct(step)}</span>` : ''}</div><div></div>`);
     }
   });
-  const [L, R, E, W] = f.stages;
-  const summary = `<div class="fn-summary">
-    <span>Lead → won <b>${pct(L.count ? W.count / L.count : null)}</b></span>
-    <span>Estimate → won <b>${pct(E.count ? W.count / E.count : null)}</b></span>
-    <span>Replied within 4 business hours <b>${pct(L.count ? f.quick / L.count : null)}</b></span>
-    <span>Median first response <b>${mins(f.medianResponse)}</b></span>
-    <span>Still open <b>${int(f.open)}</b> · lost <b>${int(f.lost)}</b></span>
-  </div><p class="note">Band widths use a square-root scale so small stages stay readable; hover a band for exact numbers.</p>`;
-  const html = `<div class="fn${funnelAnimated ? '' : ' fn-anim'}">${parts.join('')}</div>${summary}`;
+  const [L, , E, W] = f.stages;
+  const summary = hiring
+    ? `<div class="fn-summary"><span>Applicant → hired <b>${pct(L.count ? f.stages[2].count / L.count : null)}</b></span><span>Hired → booked <b>${pct(f.stages[2].count ? W.count / f.stages[2].count : null)}</b></span><span>Still in process <b>${int(f.open)}</b> · dormant <b>${int(f.dormant)}</b> · lost <b>${int(f.lost)}</b></span></div>`
+    : `<div class="fn-summary"><span>Lead → won <b>${pct(L.count ? W.count / L.count : null)}</b></span><span>Estimate → won <b>${pct(E.count ? W.count / E.count : null)}</b></span><span>Replied within 4 bus. hours <b>${pct(L.count ? f.quick / L.count : null)}</b></span><span>Median first response <b>${mins(f.medianResponse)}</b></span><span>Still open <b>${int(f.open)}</b> · lost <b>${int(f.lost)}</b></span></div>`;
+  return `<div class="fn fn-compact${funnelAnimated ? '' : ' fn-anim'}">${parts.join('')}</div>${summary}`;
+}
+function funnelsHtml(o) {
+  const html = [['labor', 'Labor'], ['demo', 'Demo'], ['containers', 'Containers']].map(([k, t]) => card(6, `${t} funnel`, `${t} leads created in this period and where they are now`, funnelHtml(M.leadFunnel(state.snap, { ...o, pipeline: k }))))
+    .concat(card(6, 'Hiring funnel', 'Applicants added in this period and where they are now (rep filter does not apply)', funnelHtml(M.hiringFunnel(state.snap, o), { hiring: true }))).join('');
   funnelAnimated = true;
   return html;
 }
@@ -443,8 +483,8 @@ async function api(path, options = {}) {
 async function load() {
   const data = await api('/api/dashboard-data', { headers: state.etag ? { 'if-none-match': state.etag } : {} });
   if (data.notModified) return false;
-  const changed = data.snapshot?.builtAt !== state.snap?.builtAt;
-  state.snap = data.snapshot; state.viewer = data.viewer; state.status = data.status; state.etag = data.snapshot ? `"${data.snapshot.builtAt}-${data.viewer.role}"` : '';
+  const changed = data.etag !== state.etag;
+  state.snap = data.snapshot; state.viewer = data.viewer; state.status = data.status; state.etag = data.etag || '';
   return changed;
 }
 // Ask GHL (the Custom Page host) for the logged-in user. GHL can be slow to start

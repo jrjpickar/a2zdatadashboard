@@ -196,3 +196,20 @@ test('sent within: cohort is opportunities created in the period, overdue unsent
   const t = M.estimatesSection(snap, { range: { from: '2026-10-01', to: '2026-10-12' }, rep: '', now: NOW }).turnaround;
   assert.deepEqual([t.sent, t.missed, t.pending, t.withinDay, t.median], [1, 1, 1, 0.5, 120]);
 });
+
+test('separate funnels: lead funnel per pipeline, hiring funnel applicants -> hired -> booked', () => {
+  const snap = base({
+    contacts: [{ id: 'c1', type: 'home-owner' }, { id: 'c2', type: 'developer' }, { id: 'w1', type: 'laborer', temperature: 'hot', name: 'Lu' }, { id: 'w2', type: 'laborer', temperature: 'cold', name: 'Bo' }],
+    opportunities: [
+      { id: 'a', pipelineId: 'L', status: 'won', value: 10, createdAt: '2026-10-05T16:00:00Z', contactId: 'c1' },
+      { id: 'b', pipelineId: 'D', stageId: 'Dn', status: 'open', value: 20, createdAt: '2026-10-05T16:00:00Z', contactId: 'c2' },
+      { id: 'h1', pipelineId: 'H', status: 'open', createdAt: '2026-10-02T16:00:00Z', contactId: 'w1' },
+      { id: 'h2', pipelineId: 'H', status: 'open', createdAt: '2026-10-02T16:00:00Z', contactId: 'w2' }
+    ],
+    dispatch: { jobs: [], moves: [], moveRuns: [], jobDays: [{ jobId: 'j', date: '2026-10-08', crew: [{ id: 'w1', name: 'Lu' }] }] }
+  });
+  const o = { range: { from: '2026-10-01', to: '2026-10-12' }, rep: '', now: NOW };
+  assert.deepEqual(M.leadFunnel(snap, { ...o, pipeline: 'labor' }).stages.map(s => s.count), [1, 0, 1, 1]);
+  assert.equal(M.leadFunnel(snap, { ...o, pipeline: 'demo' }).stages[0].count, 1);
+  assert.deepEqual(M.hiringFunnel(snap, o).stages.map(s => s.count), [2, 1, 1, 1]);
+});

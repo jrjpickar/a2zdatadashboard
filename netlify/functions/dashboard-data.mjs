@@ -4,6 +4,7 @@ import { json, errorResponse } from '../../lib/http.mjs';
 import { config } from '../../lib/config.mjs';
 import { requireSession } from '../../lib/auth.mjs';
 import { kpiStore, KEYS } from '../../lib/store.mjs';
+import { publicWorkflowData } from '../../lib/workflows.mjs';
 
 export function forViewer(snapshot, owner) {
   if (!snapshot || owner) return snapshot;
@@ -16,10 +17,11 @@ export default async function handler(request) {
     const cfg = config();
     const session = await requireSession(request, cfg);
     const store = kpiStore();
-    const [snapshot, status] = await Promise.all([store.get(KEYS.snapshot, { type: 'json' }), store.get(KEYS.status, { type: 'json' })]);
-    const etag = `"${(snapshot?.builtAt || 'none')}-${session.role}"`;
+    const [snapshot, status, wf] = await Promise.all([store.get(KEYS.snapshot, { type: 'json' }), store.get(KEYS.status, { type: 'json' }), store.get(KEYS.workflows, { type: 'json' })]);
+    if (snapshot) snapshot.workflowStats = publicWorkflowData(wf);
+    const etag = `"${(snapshot?.builtAt || 'none')}-${wf?.updatedAt || ''}-${session.role}"`;
     if (request.headers.get('if-none-match') === etag) return new Response(null, { status: 304, headers: { etag } });
-    const body = JSON.stringify({ viewer: { name: session.name, email: session.email, owner: session.owner, role: session.role }, snapshot: forViewer(snapshot, session.owner), status });
+    const body = JSON.stringify({ etag, viewer: { name: session.name, email: session.email, owner: session.owner, role: session.role }, snapshot: forViewer(snapshot, session.owner), status });
     const headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', etag };
     if (/\bgzip\b/.test(request.headers.get('accept-encoding') || '')) return new Response(gzipSync(body), { headers: { ...headers, 'content-encoding': 'gzip', vary: 'accept-encoding' } });
     return new Response(body, { headers });

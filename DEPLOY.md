@@ -46,6 +46,32 @@ Defaults you only change if GHL changes: `GHL_LOCATION_ID` (QUcu2PEAxPV1sQm1GQCq
 
 Without this, stage changes are noticed on the next sync (≤30 min). For exact times: GHL workflow, trigger **Pipeline Stage Changed** (Demo, Labor, Containers, Change Orders), action **Webhook** POST to `https://<kpi-site>/api/ghl-webhook?key=<GHL_WEBHOOK_SECRET>` with custom data `opportunity_id = {{opportunity.id}}` and `stage_name = {{opportunity.pipeline_stage}}` (plus `pipeline_id = {{opportunity.pipeline_id}}`).
 
+## Workflow stats (GHL automation)
+
+GHL's automation overview numbers (enrollments, finished, skipped/failed steps, trigger match rate) are only available from GHL's internal API, which needs a logged-in user's session. Two parts:
+
+### Workflow names (public API)
+Add the **workflows.readonly** scope to `GHL_API_TOKEN`. The normal sync then lists every workflow (name, published/draft) and the Workflows tab shows published vs. total. Nothing else to do.
+
+### Run stats (in-GHL feed script)
+`public/ghl-workflow-feed.js` ships with the dashboard. Loaded through GHL's **agency Custom JS**, it runs inside GHL, reuses the signed-in user's live session (it reads the Authorization header off GHL's own requests as they happen — nothing is stored, and it rotates automatically with the session), and every ~30 minutes — in only one open tab at a time, chosen by the dashboard — reads new workflow log rows and the overview numbers and posts slim rows (no message text) to `/api/workflow-feed`.
+
+1. Set **`WORKFLOW_FEED_KEY`** on the KPI site (Functions scope) to a long random string (`openssl rand -hex 32`).
+2. In GHL: **Agency view → Settings → Company → Custom JS** (or the location's Custom JS), add:
+   ```html
+   <script src="https://YOUR-KPI-SITE.netlify.app/ghl-workflow-feed.js"
+           data-key="YOUR_WORKFLOW_FEED_KEY"
+           data-location="QUcu2PEAxPV1sQm1GQCq" async></script>
+   ```
+   Use the same key as `WORKFLOW_FEED_KEY`. Optional data- attributes: `data-check-minutes` (default 5, how often a tab checks whether it's its turn), `data-max-requests` (default 160, GHL requests per run), `data-pause-ms` (default 300).
+3. Reload GHL. Within a minute or two the Workflows tab's "Feed updated" tile should show a recent time. To check immediately, open the browser console on a GHL page and run `__a2zWorkflowFeedRun()`.
+
+Notes:
+- The feed only updates while someone has GHL open. The Workflows tab flags stale data.
+- It uses GHL's undocumented internal API; a GHL change could pause it until the script is adjusted. It fails quietly and the tab shows the feed as stale.
+- `data-key` is visible to anyone who can read the Custom JS. The key only lets a browser *add* workflow stats to `/api/workflow-feed`; it cannot read any dashboard data. Rotate it by changing `WORKFLOW_FEED_KEY` and the snippet together.
+- First run backfills 30 days per workflow, then only new rows. A run cut short by the request budget resumes exactly where it left off.
+
 ## Users and roles
 
 - **Senior admin**: jesse@a2zcs.net (built in) plus `DASHBOARD_OWNERS`. Can't be removed. The only role that adds, changes or removes admins.

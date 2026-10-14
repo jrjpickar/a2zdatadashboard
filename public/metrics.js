@@ -602,10 +602,11 @@ export function moneySection(snap, { range, now }) {
 // ---------- lead funnel (like the LCP acquisition funnel) ----------
 // Cohort = leads created in the period (laborers excluded); each stage is that
 // cohort's current state, so a lead created this month and won later still counts.
-export function leadFunnel(snap, { range, rep, now }) {
+export function leadFunnel(snap, { range, rep, now, pipeline }) {
   const idx = buildIndex(snap);
   const tz = idx.tz, bdm = businessDayMinutes(idx.settings);
-  const leads = leadOpps(idx, rep).filter(o => inRange(localDate(o.createdAt, tz), range));
+  const pipe = pipeline ? idx.P[pipeline] || pipeline : '';
+  const leads = leadOpps(idx, rep).filter(o => inRange(localDate(o.createdAt, tz), range) && (!pipe || o.pipelineId === pipe));
   const rows = leads.map(o => ({ o, resp: firstResponse(idx, o), sent: idx.sentAt(o), won: o.status === 'won', lost: o.status === 'lost' }));
   const st = (key, list) => ({ key, count: list.length, value: sum(list, r => r.o.value) });
   const responded = rows.filter(r => r.resp);
@@ -616,6 +617,68 @@ export function leadFunnel(snap, { range, rep, now }) {
     stages: [st('leads', rows), st('responded', responded), st('estimate', sent), st('won', won)],
     quick: quick.length, lost: rows.filter(r => r.lost).length, open: rows.filter(r => !r.won && !r.lost).length,
     medianResponse: median(responded.map(r => r.resp.minutes)), wonValue: sum(won, r => r.o.value), bdm
+  };
+}
+
+// Hiring funnel: applicants added to the hiring pipeline in the period and where they are now.
+export function hiringFunnel(snap, { range, now }) {
+  const idx = buildIndex(snap);
+  const tz = idx.tz, active = idx.cfg.activeTemps || ['warm', 'hot', 'vip'];
+  const stages = idx.cfg.stages || {};
+  const apps = idx.opps.filter(o => o.pipelineId === idx.P.hiring && inRange(localDate(o.createdAt, tz), range));
+  const byContact = new Map(); for (const o of apps) if (!byContact.has(o.contactId) || o.createdAt < byContact.get(o.contactId).createdAt) byContact.set(o.contactId, o);
+  const rows = [...byContact.values()];
+  const contact = o => idx.contacts.get(o.contactId);
+  const pool = laborers(snap);
+  const byPhone = new Map(pool.filter(c => c.phone).map(c => [c.phone, c.id]));
+  const byName = new Map(pool.map(c => [String(c.name).toLowerCase(), c.id]));
+  const firstBooked = new Map();
+  for (const x of jobDayMap(snap)) for (const w of x.crew) { const id = (w.id && idx.contacts.has(w.id) && w.id) || byPhone.get(w.phone) || byName.get(String(w.name).toLowerCase()); if (id && (!firstBooked.has(id) || x.date < firstBooked.get(id))) firstBooked.set(id, x.date); }
+  const hired = rows.filter(o => active.includes(idx.tempOf(contact(o))));
+  const screened = rows.filter(o => (stages[o.stageId]?.position ?? 0) > 0 || o.status === 'won' || active.includes(idx.tempOf(contact(o))));
+  const booked = hired.filter(o => (firstBooked.get(o.contactId) || '') >= localDate(o.createdAt, tz));
+  const st = (key, list) => ({ key, count: list.length, value: 0 });
+  return { stages: [st('applied', rows), st('screened', screened), st('hired', hired), st('booked', booked)], dormant: rows.filter(o => (idx.cfg.dormantTemps || ['cold']).includes(idx.tempOf(contact(o)))).length, lost: rows.filter(o => o.status === 'lost').length, open: rows.filter(o => o.status === 'open' && !active.includes(idx.tempOf(contact(o)))).length };
+}
+
+// ---------- workflows (GHL automation stats, from the browser feed) ----------
+export function workflowsSection(snap, { range, now }) {
+  const idx = buildIndex(snap);
+  const ws = snap.workflowStats || null;
+  const list = snap.workflows || [];
+  const daily = ws?.daily || {};
+  const names = new Map(list.map(w => [w.id, w]));
+  const ids = new Set([...list.filter(w => w.status === 'published').map(w => w.id), ...Object.keys(daily)]);
+  const rows = [...ids].map(id => {
+    const d = daily[id] || {};
+    const t = { runs: 0, finished: 0, steps: 0, skipped: 0, failed: 0, reasons: {} };
+    let lastRun = '';
+    for (const [day, v] of Object.entries(d)) {
+      if (v.runs && day > lastRun) lastRun = day;
+      if (!inRange(day, range)) continue;
+      t.runs += v.runs; t.finished += v.finished; t.steps += v.steps; t.skipped += v.skipped; t.failed += v.failed;
+      for (const [k, n] of Object.entries(v.reasons || {})) t.reasons[k] = (t.reasons[k] || 0) + n;
+    }
+    const top = Object.entries(t.reasons).sort((a, b) => b[1] - a[1])[0];
+    const w = names.get(id);
+    return { id, name: w?.name || id, status: w?.status || 'unknown', ...t, finishRate: t.runs ? Math.min(1, t.finished / t.runs) : null, lastRun, topIssue: top ? { reason: top[0], count: top[1] } : null, state: ws?.state?.[id] || null };
+  }).sort((a, b) => b.runs - a.runs || a.name.localeCompare(b.name));
+  const sumK = k => sum(rows, r => r[k]);
+  const reasons = {};
+  for (const r of rows) for (const [k, n] of Object.entries(r.reasons)) reasons[k] = (reasons[k] || 0) + n;
+  const issues = (ws?.issues || []).filter(i => inRange(localDate(i.at, idx.tz), range)).map(i => ({ ...i, workflow: names.get(i.wf)?.name || i.wf, link: idx.contactLink(i.contactId) }));
+  const hist = ws?.overview?.weeklyHistory || {};
+  const weeks = Object.keys(hist).sort().slice(-12).map(w => ({ week: w, enrollments: hist[w] || 0 }));
+  const trig = ws?.overview?.trigger;
+  return {
+    available: !!ws && !!ws.lastIngestAt, listAvailable: list.length > 0,
+    published: list.filter(w => w.status === 'published').length || ws?.overview?.publishedWorkflows || 0, total: list.length || ws?.overview?.totalWorkflows || 0,
+    runs: sumK('runs'), finished: sumK('finished'), skipped: sumK('skipped'), failed: sumK('failed'), steps: sumK('steps'),
+    finishRate: sumK('runs') ? Math.min(1, sumK('finished') / sumK('runs')) : null,
+    triggerRate: trig?.total ? trig.matched / trig.total : null, trigger: trig || null,
+    rows, issues, weeks, reasons: Object.entries(reasons).map(([k, n]) => ({ key: k, count: n })).sort((a, b) => b.count - a.count),
+    quiet: rows.filter(r => r.status === 'published' && !r.runs), lastIngestAt: ws?.lastIngestAt || '', lastRunBy: ws?.lastRunBy || '',
+    pending: rows.filter(r => r.state?.pending).length
   };
 }
 

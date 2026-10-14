@@ -22,6 +22,11 @@
   status = 200
 
 [[redirects]]
+  from = "/api/workflow-feed"
+  to = "/.netlify/functions/workflow-feed"
+  status = 200
+
+[[redirects]]
   from = "/api/queue"
   to = "/.netlify/functions/queue"
   status = 200

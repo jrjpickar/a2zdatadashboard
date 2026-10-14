@@ -148,13 +148,48 @@ export function sampleSnapshot(now = Date.now(), seed = 7) {
   const conversationState = {};
   for (const c of contacts) if (c.type !== 'laborer' && r() < 0.12) conversationState[c.id] = { unread: 0, last: iso(now - r() * 2 * DAY), dir: 'inbound' };
   const ok = { ok: true, at: iso(now - 4 * 60000), checkedAt: iso(now - 4 * 60000), error: '' };
+  // Workflows (GHL automation stats, as the Custom JS feed would send them)
+  const wfDefs = [
+    ['wf-crew', 'Crew schedule text', 'published', 8, 0.95], ['wf-lead', 'New lead intake', 'published', 14, 0.88],
+    ['wf-prop', 'Proposal follow-up', 'published', 6, 0.7], ['wf-rev', 'Review request', 'published', 4, 0.9],
+    ['wf-nur', 'Long-term nurture', 'published', 3, 0.6], ['wf-old', 'Old reactivation', 'published', 0, 0]
+  ];
+  const workflows = wfDefs.map(([id, name, status]) => ({ id, name, status, updatedAt: iso(now - 20 * DAY), createdAt: iso(now - 200 * DAY) }));
+  const wfDaily = {}, wfIssues = [], wfState = {};
+  const reasonsPool = ['Contact does not have an email', 'Contact does not have a phone', 'Twilio: message failed to send', 'Invalid email address'];
+  for (const [id, name, , perDay, finRate] of wfDefs) {
+    wfDaily[id] = {}; wfState[id] = { newest: iso(now), pending: null, checkedAt: iso(now - 4 * 60000), lastError: '' };
+    for (let dag = 29; dag >= 0; dag--) {
+      const ms = now - dag * DAY; const d = day(ms); const wd = new Date(ms).getUTCDay();
+      if (!perDay || wd === 0) continue;
+      const runs = Math.max(0, Math.round(perDay * (0.6 + r() * 0.8)));
+      if (!runs) continue;
+      const finished = Math.round(runs * finRate);
+      const skipped = Math.round(runs * (id === 'wf-prop' ? 0.25 : 0.05) * r() * 2);
+      const failed = Math.round(runs * 0.03 * r() * 2);
+      const reasons = {};
+      for (let i = 0; i < skipped + failed; i++) { const rs = pick(reasonsPool); reasons[rs] = (reasons[rs] || 0) + 1; }
+      wfDaily[id][d] = { runs, finished, steps: runs * 3 + skipped + failed, skipped, failed, reasons };
+      for (let i = 0; i < Math.min(2, skipped + failed); i++) {
+        const c = pick(contacts.filter(x => x.type !== 'laborer'));
+        wfIssues.push({ wf: id, at: iso(now - dag * DAY - r() * DAY), status: skipped > failed ? 'skipped' : 'failed', step: id === 'wf-prop' ? 'Send documents & contracts' : 'SMS', type: 'sms', reason: pick(reasonsPool), contactId: c.id, contactName: c.name, run: 'run' + dag + i });
+      }
+    }
+  }
+  wfIssues.sort((a, b) => (a.at < b.at ? 1 : -1));
+  const weeklyHistory = {};
+  for (let w = 11; w >= 0; w--) { const mon = day(now - (w * 7 + ((new Date(now).getUTCDay() + 6) % 7)) * DAY); weeklyHistory[mon] = Math.round(150 + r() * 450); }
+  const workflowStats = {
+    daily: wfDaily, issues: wfIssues.slice(0, 200), state: wfState, lastIngestAt: iso(now - 12 * 60000), lastRunBy: 'tab-sample',
+    overview: { at: iso(now - 12 * 60000), totalWorkflows: 71, publishedWorkflows: 49, totalEnrollments: 5609, trigger: { total: 14486, matched: 1450, days: 30 }, weeklyHistory }
+  };
   return {
     version: 1, sample: true, builtAt: iso(now - 4 * 60000),
     settings: { containerFleet: { '10 Yard': 12, '40 Yard': 18 }, rentalDays: 7, followUpDays: 3, workdays: [1, 2, 3, 4, 5, 6], businessHours: { open: '07:00', close: '17:00' } },
     config: { timeZone: 'America/Los_Angeles', locationId: 'QUcu2PEAxPV1sQm1GQCq', ghlAppUrl: 'https://app.gohighlevel.com', pipelines: P,
       pipelineNames: { [P.demo]: 'Demo', [P.labor]: 'Labor', [P.containers]: 'Containers', [P.changeOrders]: 'Change Orders', [P.hiring]: 'Hiring' },
       stages, proposalStageIds, customerTypes: ['general-contractor', 'developer', 'home-owner'], laborerTypes: ['laborer'], activeTemps: ['warm', 'hot', 'vip'], dormantTemps: ['cold'], contactTypeSource: 'GHL contact type' },
-    users, opportunities, contacts, conversationState, stageEvents, hireEvents, messageTouches, callTouches, answeredInbound, inboundCalls,
+    users, opportunities, contacts, conversationState, stageEvents, hireEvents, messageTouches, callTouches, answeredInbound, inboundCalls, workflows, workflowStats,
     history: { stageTrackingSince: iso(now - 300 * DAY), hireTrackingSince: iso(now - 300 * DAY) },
     dispatch: { serverTime: iso(now), jobs, moves, moveRuns, jobDays, bookings, eodSheets, labor: crewPool.map(c => ({ id: c.id, name: c.name, phone: c.phone })), assets, temperatures: [], health: { makeRuns30d: [], pendingGhlScheduleSyncs: 0 } },
     ledger: { serverTime: iso(now), invoiceStages, invoiceStageEvents, invoices, bills, payroll, ar: [], baselineAsOf: '2026-08-31' },
@@ -162,7 +197,7 @@ export function sampleSnapshot(now = Date.now(), seed = 7) {
       ghl: { ...ok, counts: { opportunities: opportunities.length, contacts: contacts.length, contactsScanned: contacts.length + 900, stageEventsRecorded: 3, hiresRecorded: 0 }, apiCalls: 41 },
       conversations: { ...ok, counts: { lookedUp: 12, failed: 0, cached: Object.keys(messageTouches).length, pending: 0 } },
       twilio: { ...ok, counts: { calls: inboundCalls.length * 2, inbound: inboundCalls.length, fetched: 40 }, answerMode: 'forwarding', numbersFiltered: true },
-      dispatch: ok, ledger: ok, webhook: { ok: false, at: '', received: 0, optional: true }
+      dispatch: ok, ledger: ok, workflowList: { ...ok, counts: { workflows: workflows.length } }, webhook: { ok: false, at: '', received: 0, optional: true }
     }
   };
 }
