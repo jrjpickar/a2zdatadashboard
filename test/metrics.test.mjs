@@ -208,7 +208,8 @@ test('separate funnels: lead funnel per pipeline, hiring funnel applicants -> hi
     dispatch: { jobs: [], moves: [], moveRuns: [], jobDays: [{ jobId: 'j', date: '2026-10-08', crew: [{ id: 'w1', name: 'Lu' }] }] }
   });
   const o = { range: { from: '2026-10-01', to: '2026-10-12' }, rep: '', now: NOW };
-  assert.deepEqual(M.leadFunnel(snap, { ...o, pipeline: 'labor' }).stages.map(s => s.count), [1, 0, 1, 1]);
+  // Stages are strict subsets (no widening): a won/quoted lead counts as responded.
+  assert.deepEqual(M.leadFunnel(snap, { ...o, pipeline: 'labor' }).stages.map(s => s.count), [1, 1, 1, 1]);
   assert.equal(M.leadFunnel(snap, { ...o, pipeline: 'demo' }).stages[0].count, 1);
   assert.deepEqual(M.hiringFunnel(snap, o).stages.map(s => s.count), [2, 1, 1, 1]);
 });

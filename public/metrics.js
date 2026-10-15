@@ -597,13 +597,16 @@ export function leadFunnel(snap, { range, rep, now, pipeline }) {
   const leads = leadOpps(idx, rep).filter(o => inRange(localDate(o.createdAt, tz), range) && (!pipe || o.pipelineId === pipe));
   const rows = leads.map(o => ({ o, resp: firstResponse(idx, o), sent: idx.sentAt(o), won: o.status === 'won', lost: o.status === 'lost' }));
   const st = (key, list) => ({ key, count: list.length, value: sum(list, r => r.o.value) });
-  const responded = rows.filter(r => r.resp);
+  // Funnel stages are strict subsets so the funnel never widens: sending an estimate (or
+  // a win) counts as having responded, even if no reply touch was recorded.
+  const respondedTouch = rows.filter(r => r.resp);
+  const responded = rows.filter(r => r.resp || r.sent || r.won);
   const sent = rows.filter(r => r.sent || r.won);
   const won = rows.filter(r => r.won);
   return {
     stages: [st('leads', rows), st('responded', responded), st('estimate', sent), st('won', won)],
     lost: rows.filter(r => r.lost).length, open: rows.filter(r => !r.won && !r.lost).length,
-    medianResponse: median(responded.map(r => r.resp.minutes)), wonValue: sum(won, r => r.o.value), bdm
+    medianResponse: median(respondedTouch.map(r => r.resp.minutes)), wonValue: sum(won, r => r.o.value), bdm
   };
 }
 

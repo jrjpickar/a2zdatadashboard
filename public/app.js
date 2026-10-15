@@ -47,31 +47,32 @@ const TABS = [
   { id: 'overview', label: 'Overview', render: renderOverview },
   { id: 'leads', label: 'Leads', render: renderLeads },
   { id: 'estimates', label: 'Estimates', render: renderEstimates },
-  { id: 'containers', label: 'Containers', render: renderContainers },
-  { id: 'jobs', label: 'Jobs & Trucks', render: renderJobs },
-  { id: 'crews', label: 'Crews', render: renderCrews },
-  { id: 'hiring', label: 'Hiring', render: renderHiring },
+  { id: 'work', label: 'Work', render: renderWork },
+  { id: 'labor', label: 'Crews & Hiring', render: renderLabor },
   { id: 'workflows', label: 'Workflows', render: renderWorkflows },
   { id: 'money', label: 'Money', render: renderMoney, owner: true },
   { id: 'quality', label: 'Data Quality', render: renderQuality },
   { id: 'users', label: 'Users', render: renderUsers, owner: true }
 ];
+// old tabs merged into Work / Crews & Hiring
+state.tab = { containers: 'work', jobs: 'work', crews: 'labor', hiring: 'labor' }[state.tab] || state.tab;
 function opts() {
   const tz = state.snap?.config?.timeZone || 'America/Los_Angeles';
   return { range: M.periodRange(state.period, Date.now(), tz), rep: state.rep, now: Date.now() };
 }
 
 function renderOverview() {
-  const o = opts(), ov = M.overview(state.snap, o), e = M.estimatesSection(state.snap, o), l = M.leadsSection(state.snap, o), q = M.actionQueue(state.snap, { ...o, overrides: state.overrides }), c = M.containersSection(state.snap, o), cr = M.crewsSection(state.snap, o);
+  const o = opts(), ov = M.overview(state.snap, o), e = M.estimatesSection(state.snap, o), l = M.leadsSection(state.snap, o), q = M.actionQueue(state.snap, { ...o, overrides: state.overrides }), c = M.containersSection(state.snap, o);
+  const overdue = q.filter(i => i.overdue).length;
   return `<div class="kpis">
-    ${kpi('New leads', int(ov.leads), 'Demo, labor and container requests')}
-    ${kpi('Estimates sent', int(ov.estimatesSent), `Proposal / change order sent · ${money(e.sentValue)}`)}
-    ${kpi('Jobs won', int(ov.jobsWon), e.changeOrdersWon ? `+ ${int(e.changeOrdersWon)} change orders` : 'Demo, labor and containers')}
-    ${kpi('Revenue booked', money(ov.revenue), 'Value of jobs and change orders won')}
+    ${kpi('Needs attention', int(q.length), overdue ? `${int(overdue)} overdue` : 'Action queue, now', q.length ? (overdue ? 'crit' : 'warn') : 'good')}
+    ${kpi('New leads', int(ov.leads), `${int(l.response.awaiting)} still waiting for a reply`, l.response.awaiting ? 'warn' : '')}
+    ${kpi('Median first response', mins(ov.medianResponse), `${pct(l.response.within60)} within 1 h`, ov.medianResponse > 240 ? 'warn' : '')}
+    ${kpi('Estimates sent', int(ov.estimatesSent), e.turnaround.missed ? `${int(e.turnaround.missed)} overdue · ${money(e.sentValue)}` : money(e.sentValue), e.turnaround.missed ? 'warn' : '')}
     ${kpi('Win rate', pct(ov.winRate), `By dollars: ${pct(e.winRateValue)}`)}
-    ${kpi('Median first response', mins(ov.medianResponse), `Business hours · ${pct(l.response.within60)} within 1 h`, ov.medianResponse > 240 ? 'warn' : '')}
-    ${kpi('Containers out now', int(ov.containersOut), ov.fleet ? `${pct(ov.containerUtil)} of ${int(ov.fleet)} owned` : 'Set fleet size in Settings')}
-    ${kpi('Crew utilization', pct(ov.crewUtil), `${int(cr.booked)} of ${int(cr.available)} crew-days booked`)}
+    ${kpi('Revenue booked', money(ov.revenue), `${int(ov.jobsWon)} jobs won`)}
+    ${kpi('Open pipeline', money(e.openValue), 'All open job opportunities')}
+    ${kpi('Crew utilization', pct(ov.crewUtil), `${int(ov.crewBooked)} of ${int(ov.crewAvailable)} crew-days booked`)}
   </div>
   <div class="grid">
     ${card(7, 'Action queue', 'Needs attention now (not filtered by period)', queueList(q.slice(0, 8)), q.length > 8 ? `${q.length - 8} more on the Leads tab.` : '')}
@@ -166,81 +167,57 @@ function renderEstimates() {
 function containerSizeTable(c) {
   return table([{ label: 'Size', get: r => r.size }, { label: 'Out now', num: true, get: r => int(r.out) }, { label: 'Owned', num: true, get: r => r.fleet ? int(r.fleet) : '—' }, { label: 'In yard', num: true, get: r => r.fleet ? int(Math.max(0, r.fleet - r.out)) : '—' }, { label: 'Utilization', num: true, get: r => r.fleet ? pct(r.out / r.fleet) : '—' }], c.bySize, { empty: 'No containers out.' });
 }
-function renderContainers() {
-  const o = opts(), c = M.containersSection(state.snap, o);
-  if (!c.available) return unavailable('The dispatch board', 'dispatch');
+function renderWork() {
+  const o = opts(), j = M.jobsSection(state.snap, o), c = M.containersSection(state.snap, o);
+  if (!j.available) return unavailable('The dispatch board', 'dispatch');
+  const maxLoads = Math.max(0, ...j.trucks.map(t => t.loads));
+  const backlogSub = j.backlogWeeks == null
+    ? `${money(j.openValue)} open · not enough recent pace to estimate weeks`
+    : `${money(j.openValue)} open ÷ ${money(j.avgWeeklyCompleted)}/wk ${j.paceSource === 'invoiced' ? 'invoiced' : 'completed'}${j.backlogWeeksCrew == null ? '' : ` · ${dec(j.backlogWeeksCrew)} wk crew-scheduled`}`;
   return `<div class="kpis">
+    ${kpi('Jobs scheduled', int(j.scheduled), j.scheduledByKind.map(k => `${int(k.count)} ${k.key.toLowerCase()}`).join(' · '))}
+    ${kpi('Jobs completed', int(j.completed), j.cancelled ? `${int(j.cancelled)} cancelled` : '')}
+    ${kpi('Finished on scheduled date', pct(j.onTimeRate), `${int(j.onTimeKnown)} completed jobs with a scheduled end`, j.onTimeRate != null && j.onTimeRate < 0.8 ? 'warn' : '')}
+    ${kpi('Backlog', j.backlogWeeks == null ? '—' : dec(j.backlogWeeks) + ' weeks', backlogSub)}
+    ${kpi('Open jobs', int(j.openJobs), j.staleCount ? `${int(j.staleCount)} more look stale (${money(j.staleValue)}), not counted` : 'On the dispatch board, active in the last 60 days')}
     ${kpi('Containers out now', int(c.out), c.fleet ? `${int(Math.max(0, c.fleet - c.out))} in the yard` : 'Set fleet size in Settings')}
-    ${kpi('Utilization', pct(c.utilization), c.fleet ? `Out ÷ ${int(c.fleet)} owned` : 'Needs fleet size')}
+    ${kpi('Container utilization', pct(c.utilization), c.fleet ? `Out ÷ ${int(c.fleet)} owned` : 'Needs fleet size')}
     ${kpi('Pickups past due', int(c.pastDue.length), `Out more than ${c.rentalDays} days`, c.pastDue.length ? 'warn' : 'good')}
-    ${kpi('Average rental', c.avgRental == null ? '—' : dec(c.avgRental) + ' days', `${int(c.closedRentals)} picked up this period`)}
-    ${kpi('Drops', int(c.drops))}${kpi('Pickups', int(c.pickups))}${kpi('Swaps', int(c.swaps))}${kpi('Dump & returns', int(c.dumps))}
   </div>
   <div class="grid">
-    ${card(4, 'Out by size', 'Counts containers, not yards', containerSizeTable(c))}
+    ${card(7, j.paceSource === 'invoiced' ? 'Invoiced per week' : 'Completed per week', `${j.paceSource === 'invoiced' ? 'Job value invoiced on the Ledger' : 'Job value closed as Completed on the board'} · last 8 weeks · this is the backlog pace`, barChart(j.weekly.map(w => ({ label: w.week, tip: `Week of ${shortDate(w.week)} · ${w.count} jobs`, value: w.value })), { format: (v, axis) => axis ? moneyShort(v) : money(v), labelFormat: shortDate }))}
+    ${card(5, 'Backlog: jobs counted', `${int(j.openJobs)} jobs · ${money(j.openValue)} · biggest first. Value comes from the board, else GHL.`, table([{ label: 'Job', get: r => r.j.jobAddress || r.j.clientName || r.j.jobId }, { label: 'Type', get: r => r.kind }, { label: 'Last activity', get: r => shortDate(r.last) }, { label: 'Value', num: true, get: r => money(r.value) }], j.openRows, { scroll: true, empty: 'No open jobs on the board.' }))}
+    ${card(6, 'On the board but stale', 'Nothing scheduled, logged or edited in 60 days and nothing ahead. Mark them Completed or Cancelled on the dispatch board (or move them in GHL) to clear them.', table([{ label: 'Job', get: r => r.j.jobAddress || r.j.clientName || r.j.jobId }, { label: 'Type', get: r => r.kind }, { label: 'Last activity', get: r => r.last ? shortDate(r.last) : 'Never' }, { label: 'Value', num: true, get: r => money(r.value) }], j.staleRows, { scroll: true, empty: 'Nothing stale.' }))}
+    ${card(6, 'Late finishes', 'Completed after the scheduled end date', table([{ label: 'Job', get: r => r.j.jobAddress || r.j.clientName || r.j.jobId }, { label: 'Scheduled end', get: r => shortDate(r.planned) }, { label: 'Closed', get: r => shortDate(r.closed) }], j.late, { scroll: true, empty: 'Every completed job finished on time.' }))}
+    ${card(12, 'Trucks', 'Logistics runs with a vehicle on them', table([{ label: 'Truck', get: r => r.name }, { label: 'Days used', num: true, get: r => int(r.days) }, { label: 'Loads', html: r => barCell(r.loads, maxLoads, dec(r.loads)) }, { label: 'Loads / day', num: true, get: r => dec(r.loadsPerDay) }], j.trucks, { empty: 'No truck runs in this period.' }), 'Grading and demo haul-offs only count when they are run as logistics moves with a truck assigned.')}
     ${card(8, 'Container runs per week', 'Last 12 weeks', barChart(c.weeks.map(w => ({ label: w.week, tip: 'Week of ' + shortDate(w.week), drops: w.drops, pickups: w.pickups, swaps: w.swaps, dumps: w.dumps })), { series: [{ key: 'drops', label: 'Drops' }, { key: 'pickups', label: 'Pickups' }, { key: 'swaps', label: 'Swaps' }, { key: 'dumps', label: 'Dump & return' }], format: v => int(v), labelFormat: shortDate }))}
+    ${card(4, 'Containers out by size', 'Counts containers, not yards', containerSizeTable(c))}
     ${card(6, 'Pickups past due', `Out more than ${c.rentalDays} days`, table([{ label: 'Customer', get: r => r.client || r.key }, { label: 'Where', get: r => r.address }, { label: 'Size', get: r => r.size }, { label: 'Out since', get: r => shortDate(r.out) }, { label: 'Days', num: true, get: r => int(r.age) }], c.pastDue, { scroll: true, empty: 'Nothing past due.' }))}
     ${card(6, 'All containers out', '', table([{ label: 'Customer', get: r => r.client || r.key }, { label: 'Size', get: r => r.size }, { label: 'Out since', get: r => shortDate(r.out) }, { label: 'Days', num: true, get: r => int(r.age) }], c.openRentals, { scroll: true, empty: 'No containers out.' }))}
   </div>`;
 }
 
-function renderJobs() {
-  const o = opts(), j = M.jobsSection(state.snap, o);
-  if (!j.available) return unavailable('The dispatch board', 'dispatch');
-  const maxLoads = Math.max(0, ...j.trucks.map(t => t.loads));
+function renderLabor() {
+  const o = opts(), c = M.crewsSection(state.snap, o), h = M.hiringSection(state.snap, o);
   return `<div class="kpis">
-    ${kpi('Jobs scheduled', int(j.scheduled), j.scheduledByKind.map(k => `${int(k.count)} ${k.key.toLowerCase()}`).join(' · '))}
-    ${kpi('Jobs completed', int(j.completed), j.cancelled ? `${int(j.cancelled)} cancelled` : '')}
-    ${kpi('Finished on scheduled date', pct(j.onTimeRate), `${int(j.onTimeKnown)} completed jobs with a scheduled end`, j.onTimeRate != null && j.onTimeRate < 0.8 ? 'warn' : '')}
-    ${kpi('Backlog', j.backlogWeeksCrew == null ? '—' : dec(j.backlogWeeksCrew) + ' weeks', `${int(j.futureCrewDays)} crew-days scheduled ahead${j.backlogWeeks == null ? '' : ` · ${dec(j.backlogWeeks)} wk by $ (${money(j.openValue)} ÷ ${money(j.avgWeeklyCompleted)}/wk ${j.paceSource === 'invoiced' ? 'invoiced' : 'completed'})`}`)}
-    ${kpi('Loads per truck per day', dec(j.loadsPerTruckDay), `${dec(j.loads)} loads · ${int(j.truckDays)} truck-days`)}
-    ${kpi('Open jobs', int(j.openJobs), j.staleCount ? `${int(j.staleCount)} more on the board look stale (${money(j.staleValue)}), not counted` : 'On the dispatch board, active in the last 60 days')}
-  </div>
-  <div class="grid">
-    ${card(7, j.paceSource === 'invoiced' ? 'Invoiced per week' : 'Completed per week', `${j.paceSource === 'invoiced' ? 'Job value invoiced on the Ledger' : 'Job value closed as Completed on the board'} · last 8 weeks · this is the backlog pace`, barChart(j.weekly.map(w => ({ label: w.week, tip: `Week of ${shortDate(w.week)} · ${w.count} jobs`, value: w.value })), { format: (v, axis) => axis ? moneyShort(v) : money(v), labelFormat: shortDate }))}
-    ${card(6, 'Backlog: jobs counted', `${int(j.openJobs)} jobs · ${money(j.openValue)} · biggest first. Value comes from the board, else GHL.`, table([{ label: 'Job', get: r => r.j.jobAddress || r.j.clientName || r.j.jobId }, { label: 'Type', get: r => r.kind }, { label: 'Last activity', get: r => shortDate(r.last) }, { label: 'Value', num: true, get: r => money(r.value) }], j.openRows, { scroll: true, empty: 'No open jobs on the board.' }))}
-    ${card(6, 'On the board but stale', 'Nothing scheduled, logged or edited in 60 days and nothing ahead. Mark them Completed or Cancelled on the dispatch board (or move them in GHL) to clear them.', table([{ label: 'Job', get: r => r.j.jobAddress || r.j.clientName || r.j.jobId }, { label: 'Type', get: r => r.kind }, { label: 'Last activity', get: r => r.last ? shortDate(r.last) : 'Never' }, { label: 'Value', num: true, get: r => money(r.value) }], j.staleRows, { scroll: true, empty: 'Nothing stale.' }))}
-    ${card(5, 'Late finishes', 'Completed after the scheduled end date', table([{ label: 'Job', get: r => r.j.jobAddress || r.j.clientName || r.j.jobId }, { label: 'Scheduled end', get: r => shortDate(r.planned) }, { label: 'Closed', get: r => shortDate(r.closed) }], j.late, { scroll: true, empty: 'Every completed job finished on time.' }))}
-    ${card(12, 'Trucks', 'Logistics runs with a vehicle on them', table([{ label: 'Truck', get: r => r.name }, { label: 'Days used', num: true, get: r => int(r.days) }, { label: 'Loads', html: r => barCell(r.loads, maxLoads, dec(r.loads)) }, { label: 'Loads / day', num: true, get: r => dec(r.loadsPerDay) }], j.trucks, { empty: 'No truck runs in this period.' }), 'Grading and demo haul-offs only count when they are run as logistics moves with a truck assigned.')}
-  </div>`;
-}
-
-function renderCrews() {
-  const o = opts(), c = M.crewsSection(state.snap, o);
-  return `<div class="kpis">
-    ${kpi('Crew utilization', pct(c.utilization), 'Crew-days booked ÷ available, through today')}
+    ${kpi('Crew utilization', pct(c.utilization), `${int(c.booked)} of ${int(c.available)} crew-days booked`)}
     ${kpi('Crew-days booked', int(c.booked), 'Worker × day on a job')}
-    ${kpi('Crew-days available', int(c.available), `${int(c.activeLaborers)} active laborers × ${int(c.workDays)} work days`)}
     ${kpi('Active laborers', int(c.activeLaborers), 'Temperature warm, hot or VIP')}
-    ${kpi('Labor jobs won', int(c.laborWon), `${int(c.boardBooked)} booked on the board · ${int(c.elsewhere)} elsewhere`)}
-    ${kpi('Booked online / GHL', pct(c.laborWon ? c.elsewhere / c.laborWon : null), 'Labor jobs not booked from the dispatch board')}
     ${kpi('Repeat-customer rate', pct(c.repeatRate), `${int(c.repeatCustomers)} of ${int(c.customers)} customers who booked`)}
-    ${kpi('Sent-home hours', dec(c.sentHomeHours), 'Workers released early')}
-  </div>
-  <div class="grid">
-    ${card(8, 'Next 14 days', 'Crew-days on the board vs. active laborers', barChart(c.ahead.map(d => ({ label: d.date, booked: d.booked, available: d.available })), { series: [{ key: 'booked', label: 'Booked' }, { key: 'available', label: 'Available' }], stacked: false, format: v => int(v), labelFormat: shortDate }))}
-    ${card(4, 'Repeat customers by type', 'Customers with a job won in this period', table([{ label: 'Type', get: r => r.key }, { label: 'Customers', num: true, get: r => int(r.count) }, { label: 'Repeat', num: true, get: r => int(r.repeat) }, { label: 'Rate', num: true, get: r => pct(r.rate) }], c.repeatByType))}
-    ${card(6, 'Most booked workers', 'Days on a job this period', table([{ label: 'Worker', get: r => r.name }, { label: 'Days', html: r => barCell(r.days, c.topWorkers[0]?.days || 0, int(r.days)) }], c.topWorkers))}
-    ${card(6, 'How labor jobs were booked', 'Labor jobs won this period', table([{ label: 'Booked', get: r => r.k }, { label: 'Jobs', html: r => barCell(r.n, c.laborWon, int(r.n)) }], [{ k: 'On the dispatch board', n: c.boardBooked }, { k: 'Online or directly in GHL', n: c.elsewhere }]), 'Booked on the board = created with Book Job. Everything else in the Labor pipeline counts as online / GHL.')}
-  </div>`;
-}
-
-function renderHiring() {
-  const o = opts(), h = M.hiringSection(state.snap, o);
-  return `<div class="kpis">
     ${kpi('Applicants', int(h.applicants), 'New in the hiring pipeline')}
     ${kpi('Hire rate', pct(h.hireRate), `${int(h.hiredFromApplicants)} of this period's applicants are warm / hot / VIP`)}
-    ${kpi('Hires', int(h.hires), 'Turned warm, hot or VIP this period')}
-    ${kpi('Labor pool', int(h.pool), 'Contacts typed Laborer')}
-    ${kpi('Active', int(h.active), 'Warm, hot or VIP', 'good')}
-    ${kpi('Dormant', int(h.dormant), 'Cold')}
-    ${kpi('Active and booked (30 days)', int(h.booked30), `${int(h.active - h.booked30)} active not booked`)}
+    ${kpi('Labor pool', int(h.pool), `${int(h.active)} active · ${int(h.dormant)} dormant`)}
+    ${kpi('Active and booked (30 days)', int(h.booked30), `${int(h.active - h.booked30)} active not booked`, h.active - h.booked30 ? 'warn' : '')}
   </div>
   <div class="grid">
-    ${card(8, 'Applicants and hires by month', 'Last 12 months', barChart(h.monthly.map(m => ({ label: m.month, applicants: m.applicants, hires: m.hires })), { series: [{ key: 'applicants', label: 'Applicants' }, { key: 'hires', label: 'Hires' }], stacked: false, format: v => int(v), labelFormat: monthLabel }), h.baselineHires ? `${int(h.baselineHires)} laborers were already warm / hot / VIP when tracking started; they count in the pool but have no hire date.` : '')}
+    ${card(6, 'Next 14 days', 'Crew-days on the board vs. active laborers', barChart(c.ahead.map(d => ({ label: d.date, booked: d.booked, available: d.available })), { series: [{ key: 'booked', label: 'Booked' }, { key: 'available', label: 'Available' }], stacked: false, format: v => int(v), labelFormat: shortDate }))}
+    ${card(6, 'Applicants and hires by month', 'Last 12 months', barChart(h.monthly.map(m => ({ label: m.month, applicants: m.applicants, hires: m.hires })), { series: [{ key: 'applicants', label: 'Applicants' }, { key: 'hires', label: 'Hires' }], stacked: false, format: v => int(v), labelFormat: monthLabel }), h.baselineHires ? `${int(h.baselineHires)} laborers were already warm / hot / VIP when tracking started; they count in the pool but have no hire date.` : '')}
     ${card(4, 'Labor pool by temperature', '', table([{ label: 'Temperature', get: r => r.key }, { label: 'Laborers', html: r => barCell(r.count, h.pool, int(r.count)) }], h.byTemp))}
     ${card(4, 'Open applicants by stage', 'Hiring pipeline, now', table([{ label: 'Stage', get: r => r.key }, { label: 'Open', num: true, get: r => int(r.count) }], h.openByStage, { empty: 'No open applicants.' }))}
-    ${card(4, 'Active but not booked in 30 days', '', table([{ label: 'Laborer', html: r => link(r.link, r.name) }, { label: 'Temp', get: r => M.tempLabel(r.temp) }, { label: 'Last booked', get: r => r.last ? shortDate(r.last) : 'Never' }], h.activeNotBooked, { scroll: true, empty: 'Everyone active was booked.' }))}
+    ${card(4, 'Most booked workers', 'Days on a job this period', table([{ label: 'Worker', get: r => r.name }, { label: 'Days', html: r => barCell(r.days, c.topWorkers[0]?.days || 0, int(r.days)) }], c.topWorkers))}
+    ${card(6, 'How labor jobs were booked', 'Labor jobs won this period', table([{ label: 'Booked', get: r => r.k }, { label: 'Jobs', html: r => barCell(r.n, c.laborWon, int(r.n)) }], [{ k: 'On the dispatch board', n: c.boardBooked }, { k: 'Online or directly in GHL', n: c.elsewhere }]), 'Booked on the board = created with Book Job. Everything else in the Labor pipeline counts as online / GHL.')}
+    ${card(6, 'Active but not booked in 30 days', '', table([{ label: 'Laborer', html: r => link(r.link, r.name) }, { label: 'Temp', get: r => M.tempLabel(r.temp) }, { label: 'Last booked', get: r => r.last ? shortDate(r.last) : 'Never' }], h.activeNotBooked, { scroll: true, empty: 'Everyone active was booked.' }))}
+    ${card(4, 'Repeat customers by type', 'Customers with a job won in this period', table([{ label: 'Type', get: r => r.key }, { label: 'Customers', num: true, get: r => int(r.count) }, { label: 'Repeat', num: true, get: r => int(r.repeat) }, { label: 'Rate', num: true, get: r => pct(r.rate) }], c.repeatByType))}
   </div>`;
 }
 
