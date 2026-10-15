@@ -96,7 +96,6 @@ test('hiring: warm/hot/VIP laborers are hired; cold is dormant', () => {
   });
   const h = M.hiringSection(snap, { range: { from: '2026-10-01', to: '2026-10-12' }, now: NOW });
   assert.deepEqual([h.applicants, h.hireRate, h.hires, h.active, h.dormant], [2, 0.5, 1, 1, 1]);
-  assert.equal(h.medianDaysToHire, 4);
 });
 
 test('money: invoiced, collected and owed from Ledger columns', () => {

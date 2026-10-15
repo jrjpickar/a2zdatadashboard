@@ -12,6 +12,7 @@ let snapshot = sampleSnapshot();
 const owner = process.env.SANDBOX_VIEWER !== '1';
 const role = owner ? 'senior' : 'viewer';
 let overrides = {};
+let layout = { containers: {}, hidden: {}, labels: {}, spans: {} };
 let access = { users: [{ email: 'maria@example.com', name: 'Maria Lopez', role: 'admin', addedBy: 'Sandbox', addedAt: new Date().toISOString() }, { email: 'dan@example.com', name: 'Dan Ortiz', role: 'viewer', addedBy: 'Sandbox', addedAt: new Date().toISOString() }], requests: [{ email: 'kim@example.com', name: 'Kim Tran', at: new Date().toISOString() }], log: [] };
 const send = (res, status, body) => { res.writeHead(status, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
 createServer(async (req, res) => {
@@ -29,6 +30,10 @@ createServer(async (req, res) => {
       try { access = applyChange(structuredClone(access), JSON.parse(body), { name: 'Sandbox', role }, { owners: ['sandbox@example.com'] }); } catch (e) { return send(res, e.status || 400, { error: e.message }); }
     }
     return send(res, 200, { me: { name: 'Sandbox', email: 'sandbox@example.com', role }, seniors: ['sandbox@example.com'], ...access, ghlUsers: snapshot.users.map(u => ({ ...u, email: u.name.split(' ')[0].toLowerCase() + '@example.com' })) });
+  }
+  if (url.pathname === '/api/layout') {
+    if (req.method === 'POST') { let body = ''; for await (const c of req) body += c; const { cleanLayout } = await import('../lib/layout.mjs'); if (role !== 'senior') return send(res, 403, { error: 'Only a senior admin can change the dashboard layout.' }); layout = cleanLayout(JSON.parse(body || '{}')); return send(res, 200, { ok: true, layout }); }
+    return send(res, 200, layout);
   }
   if (url.pathname === '/api/refresh') { snapshot = { ...sampleSnapshot(), builtAt: new Date().toISOString() }; return send(res, 200, { ok: true }); }
   if (url.pathname === '/api/settings') {

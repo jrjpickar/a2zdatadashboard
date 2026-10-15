@@ -178,7 +178,6 @@ export function leadsSection(snap, { range, rep, now }) {
   const count = (key) => [...groupBy(rows, key)].map(([k, l]) => ({ key: k, count: l.length, value: sum(l, r => r.o.value) })).sort((a, b) => b.count - a.count);
   const responded = rows.filter(r => r.resp);
   const eligible60 = rows.filter(r => r.resp || r.ageMin >= 60);
-  const eligible240 = rows.filter(r => r.resp || r.ageMin >= 240);
   const daily = groupBy(rows, r => localDate(r.o.createdAt, tz));
   return {
     total: rows.length,
@@ -186,8 +185,7 @@ export function leadsSection(snap, { range, rep, now }) {
     response: {
       median: median(responded.map(r => r.resp.minutes)),
       within60: ratio(eligible60.filter(r => r.resp && r.resp.minutes <= 60).length, eligible60.length),
-      within240: ratio(eligible240.filter(r => r.resp && r.resp.minutes <= 240).length, eligible240.length),
-      responded: responded.length, awaiting: rows.filter(r => !r.resp && r.o.status === 'open').length, eligible60: eligible60.length, eligible240: eligible240.length
+      responded: responded.length, awaiting: rows.filter(r => !r.resp && r.o.status === 'open').length, eligible60: eligible60.length
     },
     daily: datesIn(range, 400).map(d => ({ date: d, count: (daily.get(d) || []).length })),
     rows
@@ -201,13 +199,9 @@ export function callsSection(snap, { range, now }) {
   const calls = (snap.inboundCalls || []).filter(c => inRange(localDate(c.at, tz), range) && !idx.laborerPhones.has(c.from)).map(c => ({ ...c, contact: byPhone.get(c.from) || null }));
   const missed = calls.filter(c => !c.answered);
   const notCalledBack = missed.filter(c => !c.calledBackAt);
-  const cbMins = missed.filter(c => c.calledBackAt).map(c => (toMs(c.calledBackAt) - toMs(c.at)) / MIN);
-  const byHour = Array.from({ length: 24 }, (_, h) => ({ hour: h, answered: 0, missed: 0 }));
-  for (const c of calls) { const p = parts(toMs(c.at), tz); byHour[p.H][c.answered ? 'answered' : 'missed']++; }
   return {
     total: calls.length, answered: calls.length - missed.length, missed: missed.length, answerRate: ratio(calls.length - missed.length, calls.length),
-    notCalledBack: notCalledBack.length, calledBackMedianMin: median(cbMins), calledBackWithin60: ratio(cbMins.filter(m => m <= 60).length, missed.length),
-    byHour: byHour.filter(h => h.answered || h.missed),
+    notCalledBack: notCalledBack.length,
     missedList: missed.slice(0, 200), mode: snap.feeds?.twilio?.answerMode || '', available: !!snap.inboundCalls
   };
 }
@@ -319,7 +313,7 @@ export function estimatesSection(snap, { range, rep, now }) {
     won: won.filter(o => o.pipelineId !== idx.P.changeOrders).length, changeOrdersWon: won.filter(o => o.pipelineId === idx.P.changeOrders).length,
     revenue: sum(won, o => o.value), lostCount: lost.length,
     winRate: ratio(won.length, closed.length), winRateValue: ratio(sum(won, o => o.value), sum(closed, o => o.value)),
-    byService: winSplit(o => idx.serviceName(o.pipelineId)), byType: winSplit(o => typeLabel(c(o)?.type)), bySource: winSplit(o => sourceBucket(o.source || c(o)?.source, idx.isRepeat(o.contactId, o.createdAt))),
+    byService: winSplit(o => idx.serviceName(o.pipelineId)), byType: winSplit(o => typeLabel(c(o)?.type)),
     avgByService: wonService, byStage, aging: Object.entries(aging).map(([k, v]) => ({ key: k, count: v, value: agingValue[k] })),
     waiting: waiting.sort((a, b) => b.days - a.days).slice(0, 50),
     lostReasons: [...groupBy(lost, o => o.lostReason || 'No reason given')].map(([k, l]) => ({ key: k, count: l.length, value: sum(l, o => o.value) })).sort((a, b) => b.count - a.count),
@@ -458,13 +452,12 @@ export function jobsSection(snap, { range, now }) {
   const assetName = new Map((d.assets || []).map(a => [a.id, a.name]));
   const perTruck = new Map();
   for (const r of runs) {
-    const share = (r.value || 0) / ((moveRunCount.get(r.moveId) || [1]).length || 1) / r.assetIds.length;
     for (const a of r.assetIds) {
-      const t = perTruck.get(a) || perTruck.set(a, { id: a, name: assetName.get(a) || a, days: new Set(), loads: 0, revenue: 0 }).get(a);
-      t.days.add(r.date); t.loads += (r.loadCount || 1) / r.assetIds.length; t.revenue += share;
+      const t = perTruck.get(a) || perTruck.set(a, { id: a, name: assetName.get(a) || a, days: new Set(), loads: 0 }).get(a);
+      t.days.add(r.date); t.loads += (r.loadCount || 1) / r.assetIds.length;
     }
   }
-  const trucks = [...perTruck.values()].map(t => ({ ...t, days: t.days.size, loadsPerDay: t.loads / t.days.size, revenuePerDay: t.revenue / t.days.size })).sort((a, b) => b.days - a.days);
+  const trucks = [...perTruck.values()].map(t => ({ ...t, days: t.days.size, loadsPerDay: t.loads / t.days.size })).sort((a, b) => b.days - a.days);
   const truckDays = sum(trucks, t => t.days);
   const kinds = groupBy([...scheduledIds].map(id => jobs.find(j => j.jobId === id)).filter(Boolean), j => jobKind(idx, j));
   return {
@@ -474,7 +467,7 @@ export function jobsSection(snap, { range, now }) {
     openJobs: openJobs.length, openValue, openRows: openRows.slice(0, 100), staleRows: staleRows.slice(0, 100), staleCount: staleRows.length, staleValue: sum(staleRows, r => r.value), avgWeeklyCompleted: avgWeekly, paceSource, paceJobs, backlogWeeks: avgWeekly > 0 && paceJobs >= 3 ? openValue / avgWeekly : null,
     futureCrewDays, avgWeeklyCrewDays: pastWeeksCrewDays, backlogWeeksCrew: pastWeeksCrewDays > 0 ? futureCrewDays / pastWeeksCrewDays : null,
     weekly, trucks, truckDays, loads: sum(trucks, t => t.loads), loadsPerTruckDay: truckDays ? sum(trucks, t => t.loads) / truckDays : null,
-    revenuePerTruckDay: truckDays ? sum(trucks, t => t.revenue) / truckDays : null, available: !!snap.dispatch
+    available: !!snap.dispatch
   };
 }
 
@@ -522,9 +515,7 @@ export function hiringSection(snap, { range, now }) {
   const applicants = hiringOpps.filter(o => inRange(localDate(o.createdAt, tz), range));
   const isHired = id => activeTemps.includes(idx.tempOf(idx.contacts.get(id)));
   const events = snap.hireEvents || {};
-  const appliedAt = new Map(); for (const o of hiringOpps) if (o.contactId && (!appliedAt.has(o.contactId) || o.createdAt < appliedAt.get(o.contactId))) appliedAt.set(o.contactId, o.createdAt);
   const hires = Object.entries(events).filter(([, e]) => e.at && inRange(localDate(e.at, tz), range));
-  const tth = Object.entries(events).filter(([id, e]) => e.at && appliedAt.has(id) && e.at >= appliedAt.get(id)).map(([id, e]) => (toMs(e.at) - toMs(appliedAt.get(id))) / DAY);
   const stages = idx.cfg.stages || {};
   const openByStage = [...groupBy(hiringOpps.filter(o => o.status === 'open'), o => o.stageId)].map(([id, l]) => ({ key: stages[id]?.name || 'Unknown stage', position: stages[id]?.position ?? 99, count: l.length })).sort((a, b) => a.position - b.position);
   const months = []; for (let i = 11; i >= 0; i--) { const d = new Date(Date.UTC(Number(today.slice(0, 4)), Number(today.slice(5, 7)) - 1 - i, 1)); months.push(d.toISOString().slice(0, 7)); }
@@ -539,13 +530,12 @@ export function hiringSection(snap, { range, now }) {
   for (const x of days) for (const w of x.crew) { const id = (w.id && idx.contacts.has(w.id) && w.id) || byPhone.get(w.phone) || byName.get(String(w.name).toLowerCase()); if (id && (!lastBooked.has(id) || x.date > lastBooked.get(id))) lastBooked.set(id, x.date); }
   const activePool = pool.filter(c => activeTemps.includes(c.temp));
   const booked30 = activePool.filter(c => (lastBooked.get(c.id) || '') >= addDays(today, -30));
-  const retention = days => { const cohort = Object.entries(events).filter(([, e]) => e.at && daysBetween(localDate(e.at, tz), today) >= days); const kept = cohort.filter(([id, e]) => (lastBooked.get(id) || '') >= addDays(localDate(e.at, tz), days)); return { cohort: cohort.length, kept: kept.length, rate: ratio(kept.length, cohort.length) }; };
   return {
     applicants: applicants.length, hiredFromApplicants: applicants.filter(o => isHired(o.contactId)).length, hireRate: ratio(applicants.filter(o => isHired(o.contactId)).length, applicants.length),
-    hires: hires.length, medianDaysToHire: median(tth), openByStage, monthly,
+    hires: hires.length, openByStage, monthly,
     pool: pool.length, active: activePool.length, dormant: pool.filter(c => dormant.includes(c.temp)).length, byTemp,
     booked30: booked30.length, activeNotBooked: activePool.filter(c => !booked30.includes(c)).map(c => ({ name: c.name, temp: c.temp, last: lastBooked.get(c.id) || '', link: idx.contactLink(c.id) })).sort((a, b) => (a.last < b.last ? -1 : 1)),
-    retention30: retention(30), retention60: retention(60), baselineHires: Object.values(events).filter(e => e.baseline).length
+    baselineHires: Object.values(events).filter(e => e.baseline).length
   };
 }
 
@@ -567,7 +557,6 @@ export function moneySection(snap, { range, now }) {
   const issued = inv.filter(x => x.stage !== 'draft' && inRange(x.issued, range));
   const paid = inv.filter(x => x.paidAt && inRange(localDate(x.paidAt, tz), range));
   const ar = inv.filter(x => x.stage === 'sent' || x.stage === 'overdue');
-  const last90 = sum(inv.filter(x => x.stage !== 'draft' && x.issued >= addDays(today, -90)), x => x.amount);
   const bills = (L.bills || []).filter(b => b.status !== 'rejected');
   const billsIn = bills.filter(b => inRange(b.date, range));
   const cats = new Map();
@@ -590,7 +579,6 @@ export function moneySection(snap, { range, now }) {
     invoiced: sum(issued, x => x.amount), invoicedCount: issued.length, collected: sum(paid, x => x.amount), collectedCount: paid.length,
     arOutstanding: sum(ar, x => x.balance), arOverdue: sum(ar.filter(x => x.stage === 'overdue'), x => x.balance), arCount: ar.length,
     daysToPaid: median(paid.filter(x => x.sentAt).map(x => (toMs(x.paidAt) - toMs(x.sentAt)) / DAY)),
-    dso: last90 > 0 ? sum(ar, x => x.balance) / (last90 / 90) : null,
     apOutstanding: sum(bills.filter(b => b.status === 'pending' || b.status === 'approved'), b => b.balance), apOverdue: sum(bills.filter(b => (b.status === 'pending' || b.status === 'approved') && b.dueDate && b.dueDate < today), b => b.balance),
     costOfRevenue: cor, payroll, opex, grossProfit: sum(issued, x => x.amount) - cor, grossMargin: ratio(sum(issued, x => x.amount) - cor, sum(issued, x => x.amount)),
     costByCategory: [...cats].map(([k, v]) => ({ key: k, value: v, cor: COST_OF_REVENUE.includes(k.toLowerCase()) })).sort((a, b) => b.value - a.value),
@@ -610,12 +598,11 @@ export function leadFunnel(snap, { range, rep, now, pipeline }) {
   const rows = leads.map(o => ({ o, resp: firstResponse(idx, o), sent: idx.sentAt(o), won: o.status === 'won', lost: o.status === 'lost' }));
   const st = (key, list) => ({ key, count: list.length, value: sum(list, r => r.o.value) });
   const responded = rows.filter(r => r.resp);
-  const quick = rows.filter(r => r.resp && r.resp.minutes <= 4 * 60);
   const sent = rows.filter(r => r.sent || r.won);
   const won = rows.filter(r => r.won);
   return {
     stages: [st('leads', rows), st('responded', responded), st('estimate', sent), st('won', won)],
-    quick: quick.length, lost: rows.filter(r => r.lost).length, open: rows.filter(r => !r.won && !r.lost).length,
+    lost: rows.filter(r => r.lost).length, open: rows.filter(r => !r.won && !r.lost).length,
     medianResponse: median(responded.map(r => r.resp.minutes)), wonValue: sum(won, r => r.o.value), bdm
   };
 }

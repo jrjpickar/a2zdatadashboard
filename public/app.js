@@ -4,7 +4,7 @@ import { barChart, barCell, attachTooltips, esc } from './charts.js';
 const $ = id => document.getElementById(id);
 const TOKEN_KEY = 'a2z-kpi-token';
 const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} }, del(k) { try { localStorage.removeItem(k); } catch {} } };
-const state = { overrides: {}, snap: null, viewer: null, status: null, etag: '', period: store.get('kpi-period') || 'mtd', rep: store.get('kpi-rep') || '', tab: store.get('kpi-tab') || 'overview', queueKind: 'all', refreshing: false };
+const state = { overrides: {}, snap: null, viewer: null, status: null, etag: '', period: store.get('kpi-period') || 'mtd', rep: store.get('kpi-rep') || '', tab: store.get('kpi-tab') || 'overview', queueKind: 'all', refreshing: false, layout: { containers: {}, hidden: {}, labels: {}, spans: {} }, customize: false };
 
 // ---------- formatting ----------
 const nf0 = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
@@ -117,11 +117,9 @@ function renderLeads() {
     ${kpi('New leads', int(l.total), `${int(l.response.awaiting)} still waiting for a reply`)}
     ${kpi('Median first response', mins(l.response.median), 'Business hours, first human call / text / email')}
     ${kpi('Answered within 1 hour', pct(l.response.within60), `${int(l.response.eligible60)} leads counted`, l.response.within60 != null && l.response.within60 < 0.5 ? 'warn' : '')}
-    ${kpi('Answered within 4 hours', pct(l.response.within240), 'Site promise: reply within a few hours')}
     ${kpi('Inbound calls', calls.available ? int(calls.total) : '—', calls.available ? `${int(calls.answered)} answered · ${int(calls.missed)} missed` : 'Twilio not connected')}
     ${kpi('Answer rate', pct(calls.answerRate), 'Inbound calls picked up', calls.answerRate != null && calls.answerRate < 0.8 ? 'warn' : '')}
     ${kpi('Missed, not called back', int(calls.notCalledBack), 'No outbound call to that number since', calls.notCalledBack ? 'crit' : 'good')}
-    ${kpi('Callback time', mins(calls.calledBackMedianMin), `Median, missed calls · ${pct(calls.calledBackWithin60)} within 1 h`)}
   </div>
   <div class="grid">
     ${funnelsHtml(o)}
@@ -133,8 +131,7 @@ function renderLeads() {
     ${card(4, 'Leads by service line', '', countTable(l.byService, { label: 'Service', valueCol: true }))}
     ${card(4, 'Leads by customer type', 'GHL contact type', countTable(l.byType, { label: 'Type' }))}
     ${card(6, 'New leads by day', '', barChart(l.daily.slice(-62).map(d => ({ label: d.date, value: d.count })), { format: v => int(v), labelFormat: shortDate }))}
-    ${card(6, 'Inbound calls by hour', 'Pacific time', calls.available ? barChart(calls.byHour.map(h => ({ label: h.hour, tip: `${h.hour % 12 || 12} ${h.hour < 12 ? 'AM' : 'PM'}`, answered: h.answered, missed: h.missed })), { series: [{ key: 'answered', label: 'Answered' }, { key: 'missed', label: 'Missed' }], format: v => int(v), labelFormat: h => `${h % 12 || 12}${h < 12 ? 'a' : 'p'}` }) : unavailable('Twilio', 'twilio'))}
-    ${card(12, 'Missed calls', 'Newest first', table([
+    ${card(6, 'Missed calls', 'Newest first', table([
       { label: 'When', get: r => when(r.at) }, { label: 'Caller', html: r => r.contact ? link(state.idx.contactLink(r.contact.id), r.contact.name) : esc(phone(r.from)) },
       { label: 'Called back', html: r => r.calledBackAt ? `${esc(when(r.calledBackAt))} <span class="pill good">${mins((Date.parse(r.calledBackAt) - Date.parse(r.at)) / 60000)}</span>` : pill('Not yet', 'crit') }
     ], calls.missedList, { scroll: true, empty: 'No missed calls in this period.' }))}
@@ -158,7 +155,6 @@ function renderEstimates() {
   <div class="grid">
     ${card(4, 'Win rate by service', '', winTable(e.byService, 'Service'))}
     ${card(4, 'Win rate by customer type', '', winTable(e.byType, 'Type'))}
-    ${card(4, 'Win rate by lead source', '', winTable(e.bySource, 'Source'))}
     ${card(4, 'Average job value', 'Jobs won in this period', table([{ label: 'Service', get: r => r.key }, { label: 'Won', num: true, get: r => int(r.count) }, { label: 'Average', num: true, get: r => money(r.avg) }, { label: 'Total', num: true, get: r => money(r.value) }], e.avgByService))}
     ${card(8, 'Open pipeline by stage', 'Current, not filtered by period', table([{ label: 'Pipeline', get: r => r.pipeline }, { label: 'Stage', get: r => r.name }, { label: 'Open', num: true, get: r => int(r.count) }, { label: 'Value', html: r => barCell(r.value, maxStage, money(r.value)) }], e.byStage, { scroll: true }))}
     ${card(5, 'How long proposals have been waiting', 'Open opportunities sitting in Proposal Sent / Change Order Sent', barChart(e.aging.map(a => ({ label: a.key, value: a.count, tip: `${a.key} · ${money(a.value)}` })), { format: v => int(v) }))}
@@ -196,10 +192,8 @@ function renderJobs() {
     ${kpi('Jobs scheduled', int(j.scheduled), j.scheduledByKind.map(k => `${int(k.count)} ${k.key.toLowerCase()}`).join(' · '))}
     ${kpi('Jobs completed', int(j.completed), j.cancelled ? `${int(j.cancelled)} cancelled` : '')}
     ${kpi('Finished on scheduled date', pct(j.onTimeRate), `${int(j.onTimeKnown)} completed jobs with a scheduled end`, j.onTimeRate != null && j.onTimeRate < 0.8 ? 'warn' : '')}
-    ${kpi('Backlog', j.backlogWeeks == null ? '—' : dec(j.backlogWeeks) + ' weeks', j.backlogWeeks == null ? `${money(j.openValue)} booked · not enough finished work in the last 8 weeks to estimate pace` : `${money(j.openValue)} on the board ÷ ${money(j.avgWeeklyCompleted)}/week ${j.paceSource === 'invoiced' ? 'invoiced' : 'completed'}`)}
-    ${kpi('Crew backlog', j.backlogWeeksCrew == null ? '—' : dec(j.backlogWeeksCrew) + ' weeks', `${int(j.futureCrewDays)} crew-days scheduled ahead`)}
+    ${kpi('Backlog', j.backlogWeeksCrew == null ? '—' : dec(j.backlogWeeksCrew) + ' weeks', `${int(j.futureCrewDays)} crew-days scheduled ahead${j.backlogWeeks == null ? '' : ` · ${dec(j.backlogWeeks)} wk by $ (${money(j.openValue)} ÷ ${money(j.avgWeeklyCompleted)}/wk ${j.paceSource === 'invoiced' ? 'invoiced' : 'completed'})`}`)}
     ${kpi('Loads per truck per day', dec(j.loadsPerTruckDay), `${dec(j.loads)} loads · ${int(j.truckDays)} truck-days`)}
-    ${kpi('Revenue per truck-day', money(j.revenuePerTruckDay), 'Move value spread over its runs')}
     ${kpi('Open jobs', int(j.openJobs), j.staleCount ? `${int(j.staleCount)} more on the board look stale (${money(j.staleValue)}), not counted` : 'On the dispatch board, active in the last 60 days')}
   </div>
   <div class="grid">
@@ -207,7 +201,7 @@ function renderJobs() {
     ${card(6, 'Backlog: jobs counted', `${int(j.openJobs)} jobs · ${money(j.openValue)} · biggest first. Value comes from the board, else GHL.`, table([{ label: 'Job', get: r => r.j.jobAddress || r.j.clientName || r.j.jobId }, { label: 'Type', get: r => r.kind }, { label: 'Last activity', get: r => shortDate(r.last) }, { label: 'Value', num: true, get: r => money(r.value) }], j.openRows, { scroll: true, empty: 'No open jobs on the board.' }))}
     ${card(6, 'On the board but stale', 'Nothing scheduled, logged or edited in 60 days and nothing ahead. Mark them Completed or Cancelled on the dispatch board (or move them in GHL) to clear them.', table([{ label: 'Job', get: r => r.j.jobAddress || r.j.clientName || r.j.jobId }, { label: 'Type', get: r => r.kind }, { label: 'Last activity', get: r => r.last ? shortDate(r.last) : 'Never' }, { label: 'Value', num: true, get: r => money(r.value) }], j.staleRows, { scroll: true, empty: 'Nothing stale.' }))}
     ${card(5, 'Late finishes', 'Completed after the scheduled end date', table([{ label: 'Job', get: r => r.j.jobAddress || r.j.clientName || r.j.jobId }, { label: 'Scheduled end', get: r => shortDate(r.planned) }, { label: 'Closed', get: r => shortDate(r.closed) }], j.late, { scroll: true, empty: 'Every completed job finished on time.' }))}
-    ${card(12, 'Trucks', 'Logistics runs with a vehicle on them', table([{ label: 'Truck', get: r => r.name }, { label: 'Days used', num: true, get: r => int(r.days) }, { label: 'Loads', html: r => barCell(r.loads, maxLoads, dec(r.loads)) }, { label: 'Loads / day', num: true, get: r => dec(r.loadsPerDay) }, { label: 'Revenue / day', num: true, get: r => money(r.revenuePerDay) }], j.trucks, { empty: 'No truck runs in this period.' }), 'Grading and demo haul-offs only count when they are run as logistics moves with a truck assigned.')}
+    ${card(12, 'Trucks', 'Logistics runs with a vehicle on them', table([{ label: 'Truck', get: r => r.name }, { label: 'Days used', num: true, get: r => int(r.days) }, { label: 'Loads', html: r => barCell(r.loads, maxLoads, dec(r.loads)) }, { label: 'Loads / day', num: true, get: r => dec(r.loadsPerDay) }], j.trucks, { empty: 'No truck runs in this period.' }), 'Grading and demo haul-offs only count when they are run as logistics moves with a truck assigned.')}
   </div>`;
 }
 
@@ -237,7 +231,6 @@ function renderHiring() {
     ${kpi('Applicants', int(h.applicants), 'New in the hiring pipeline')}
     ${kpi('Hire rate', pct(h.hireRate), `${int(h.hiredFromApplicants)} of this period's applicants are warm / hot / VIP`)}
     ${kpi('Hires', int(h.hires), 'Turned warm, hot or VIP this period')}
-    ${kpi('Days to hire', h.medianDaysToHire == null ? '—' : dec(h.medianDaysToHire), 'Median, applied to hired')}
     ${kpi('Labor pool', int(h.pool), 'Contacts typed Laborer')}
     ${kpi('Active', int(h.active), 'Warm, hot or VIP', 'good')}
     ${kpi('Dormant', int(h.dormant), 'Cold')}
@@ -247,7 +240,6 @@ function renderHiring() {
     ${card(8, 'Applicants and hires by month', 'Last 12 months', barChart(h.monthly.map(m => ({ label: m.month, applicants: m.applicants, hires: m.hires })), { series: [{ key: 'applicants', label: 'Applicants' }, { key: 'hires', label: 'Hires' }], stacked: false, format: v => int(v), labelFormat: monthLabel }), h.baselineHires ? `${int(h.baselineHires)} laborers were already warm / hot / VIP when tracking started; they count in the pool but have no hire date.` : '')}
     ${card(4, 'Labor pool by temperature', '', table([{ label: 'Temperature', get: r => r.key }, { label: 'Laborers', html: r => barCell(r.count, h.pool, int(r.count)) }], h.byTemp))}
     ${card(4, 'Open applicants by stage', 'Hiring pipeline, now', table([{ label: 'Stage', get: r => r.key }, { label: 'Open', num: true, get: r => int(r.count) }], h.openByStage, { empty: 'No open applicants.' }))}
-    ${card(4, 'Retention', 'Hires still getting booked', table([{ label: 'After', get: r => r.k }, { label: 'Hires', num: true, get: r => int(r.v.cohort) }, { label: 'Still booked', num: true, get: r => int(r.v.kept) }, { label: 'Rate', num: true, get: r => pct(r.v.rate) }], [{ k: '30 days', v: h.retention30 }, { k: '60 days', v: h.retention60 }]))}
     ${card(4, 'Active but not booked in 30 days', '', table([{ label: 'Laborer', html: r => link(r.link, r.name) }, { label: 'Temp', get: r => M.tempLabel(r.temp) }, { label: 'Last booked', get: r => r.last ? shortDate(r.last) : 'Never' }], h.activeNotBooked, { scroll: true, empty: 'Everyone active was booked.' }))}
   </div>`;
 }
@@ -293,7 +285,6 @@ function renderMoney() {
     ${kpi('Invoiced', money(m.invoiced), `${int(m.invoicedCount)} invoices sent`)}
     ${kpi('Collected', money(m.collected), `${int(m.collectedCount)} invoices paid`)}
     ${kpi('Owed to A2Z', money(m.arOutstanding), `${money(m.arOverdue)} overdue`, m.arOverdue > 0 ? 'warn' : '')}
-    ${kpi('Days sales outstanding', m.dso == null ? '—' : dec(m.dso), 'Owed ÷ average daily invoicing (90 days)')}
     ${kpi('Days to get paid', m.daysToPaid == null ? '—' : dec(m.daysToPaid), 'Median, sent to paid')}
     ${kpi('Cost of revenue', money(m.costOfRevenue), `Incl. ${money(m.payroll)} BBSI payroll`)}
     ${kpi('Gross margin', pct(m.grossMargin), `${money(m.grossProfit)} on invoiced work`, m.grossMargin != null && m.grossMargin < 0.25 ? 'warn' : '')}
@@ -381,7 +372,7 @@ function funnelHtml(f, { hiring = false } = {}) {
   const [L, , E, W] = f.stages;
   const summary = hiring
     ? `<div class="fn-summary"><span>Applicant → hired <b>${pct(L.count ? f.stages[2].count / L.count : null)}</b></span><span>Hired → booked <b>${pct(f.stages[2].count ? W.count / f.stages[2].count : null)}</b></span><span>Still in process <b>${int(f.open)}</b> · dormant <b>${int(f.dormant)}</b> · lost <b>${int(f.lost)}</b></span></div>`
-    : `<div class="fn-summary"><span>Lead → won <b>${pct(L.count ? W.count / L.count : null)}</b></span><span>Estimate → won <b>${pct(E.count ? W.count / E.count : null)}</b></span><span>Replied within 4 bus. hours <b>${pct(L.count ? f.quick / L.count : null)}</b></span><span>Median first response <b>${mins(f.medianResponse)}</b></span><span>Still open <b>${int(f.open)}</b> · lost <b>${int(f.lost)}</b></span></div>`;
+    : `<div class="fn-summary"><span>Lead → won <b>${pct(L.count ? W.count / L.count : null)}</b></span><span>Estimate → won <b>${pct(E.count ? W.count / E.count : null)}</b></span><span>Median first response <b>${mins(f.medianResponse)}</b></span><span>Still open <b>${int(f.open)}</b> · lost <b>${int(f.lost)}</b></span></div>`;
   return `<div class="fn fn-compact${funnelAnimated ? '' : ' fn-anim'}">${parts.join('')}</div>${summary}`;
 }
 function funnelsHtml(o) {
@@ -451,6 +442,12 @@ function renderShell() {
   const users = (state.snap?.users || []).slice().sort((a, b) => a.name.localeCompare(b.name));
   $('repSelect').innerHTML = `<option value="">All reps</option>${users.map(u => `<option value="${esc(u.id)}" ${u.id === state.rep ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}`;
   $('settingsBtn').hidden = !state.viewer?.owner;
+  let cz = $('customizeBtn');
+  if (!cz) { cz = document.createElement('button'); cz.id = 'customizeBtn'; cz.type = 'button'; cz.className = 'top-btn'; cz.addEventListener('click', toggleCustomize); $('settingsBtn').insertAdjacentElement('beforebegin', cz); }
+  cz.hidden = state.viewer?.role !== 'senior';
+  cz.textContent = state.customize ? 'Done customizing' : 'Customize tiles';
+  cz.classList.toggle('active', state.customize);
+  document.body.classList.toggle('customizing', state.customize);
   $('who').innerHTML = state.viewer ? `${esc(state.viewer.name)} <span class="role-badge">${esc((ROLE_LABEL[state.viewer.role] || '').toUpperCase())}</span>` : '';
 }
 function render() {
@@ -467,9 +464,131 @@ function render() {
   if (state.rep) banners.push(`<div class="banner">Filtered to <b>${esc(userName(state.rep))}</b>: leads, estimates and wins only. Containers, jobs, crews and hiring always show the whole company.</div>`);
   $('banners').innerHTML = banners.join('');
   const tab = TABS.find(t => t.id === state.tab) || TABS[0];
-  try { $('view').innerHTML = `<div role="tabpanel">${tab.render()}</div>`; }
+  try { $('view').innerHTML = `<div role="tabpanel">${tab.render()}</div>`; decorateTiles(); }
   catch (e) { console.error(e); $('view').innerHTML = `<div class="banner crit">This tab could not be drawn: ${esc(e.message)}</div>`; }
 }
+
+// ---------- tile customization (senior admins) ----------
+const isSenior = () => state.viewer?.role === 'senior';
+const slug = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'tile';
+const blankLayout = () => ({ containers: {}, hidden: {}, labels: {}, spans: {} });
+function loadLayout() { return api('/api/layout').then(l => { state.layout = { ...blankLayout(), ...l }; }).catch(() => {}); }
+let layoutSaveTimer;
+function saveLayout() {
+  clearTimeout(layoutSaveTimer); setLayoutStatus('Saving…');
+  layoutSaveTimer = setTimeout(async () => {
+    const { containers, hidden, labels, spans } = state.layout;
+    try { const r = await api('/api/layout', { method: 'POST', body: JSON.stringify({ containers, hidden, labels, spans }) }); state.layout = { ...blankLayout(), ...r.layout }; setLayoutStatus('Saved'); }
+    catch (e) { setLayoutStatus('Not saved: ' + e.message); }
+  }, 500);
+}
+function setLayoutStatus(t) { const el = $('czStatus'); if (el) el.textContent = t; }
+function toggleCustomize() { if (!isSenior()) return; state.customize = !state.customize; render(); }
+const currentSpan = el => { const m = el.className.match(/\bspan-(\d+)\b/); return m ? Number(m[1]) : 12; };
+const setSpan = (el, n) => { el.className = (el.className.replace(/\bspan-\d+\b/, '').trim() + ' span-' + n).replace(/\s+/g, ' '); };
+
+function decorateTiles() {
+  const view = $('view'); if (!view) return;
+  const L = state.layout || blankLayout();
+  const editing = state.customize && isSenior();
+  const kindN = {};
+  view.querySelectorAll('.kpis, .grid').forEach(cont => {
+    const kind = cont.classList.contains('kpis') ? 'kpis' : 'grid';
+    const cid = `${state.tab}:${kind}:${(kindN[kind] = (kindN[kind] || 0) + 1) - 1}`;
+    cont.dataset.cid = cid;
+    const tiles = [...cont.children].filter(el => el.classList.contains('kpi') || el.classList.contains('card'));
+    const titleOf = el => el.classList.contains('kpi') ? el.querySelector('.label') : el.querySelector('h2');
+    const counts = {};
+    tiles.forEach(el => {
+      const base = slug(titleOf(el)?.textContent || '');
+      const n = counts[base] = (counts[base] || 0) + 1;
+      el.dataset.key = n === 1 ? base : `${base}-${n}`;
+      el.dataset.fqid = `${cid}#${el.dataset.key}`;
+      el.dataset.orig = titleOf(el)?.textContent || '';
+    });
+    const order = L.containers?.[cid];
+    if (order && order.length) {
+      const byKey = new Map(tiles.map(el => [el.dataset.key, el]));
+      const seq = [...order.filter(k => byKey.has(k)), ...tiles.map(el => el.dataset.key).filter(k => !order.includes(k))];
+      seq.forEach(k => cont.appendChild(byKey.get(k)));
+    }
+    tiles.forEach(el => {
+      const fqid = el.dataset.fqid, hidden = !!L.hidden?.[fqid], titleEl = titleOf(el);
+      el.classList.toggle('tile-hidden', hidden && editing);
+      el.style.display = hidden && !editing ? 'none' : '';
+      if (titleEl) titleEl.textContent = L.labels?.[fqid] || el.dataset.orig;
+      if (el.classList.contains('card') && L.spans?.[fqid]) setSpan(el, L.spans[fqid]);
+      el.querySelector('.tile-tools')?.remove();
+      el.draggable = false;
+      if (titleEl) { titleEl.contentEditable = 'false'; titleEl.classList.remove('tt-editable'); }
+      if (editing) addTileTools(el, titleEl, hidden);
+    });
+  });
+  view.querySelector('.cz-bar')?.remove();
+  if (editing) view.insertAdjacentHTML('afterbegin', `<div class="cz-bar"><b>Customizing</b> <span class="cz-hint">drag&nbsp;⠿ to move · × to hide · click a title to rename · ‹›/⟷ to resize cards</span><span class="spacer"></span><span id="czStatus" class="cz-status"></span><button type="button" class="btn" data-cz="reset">Reset this tab</button><button type="button" class="btn primary" data-cz="done">Done</button></div>`);
+}
+function addTileTools(el, titleEl, hidden) {
+  const isCard = el.classList.contains('card');
+  const tools = document.createElement('div');
+  tools.className = 'tile-tools';
+  tools.innerHTML = `<span class="tt-drag" title="Drag to move">⠿</span>${isCard ? '<button type="button" class="tt-btn" data-tt="narrow" title="Narrower">‹›</button><button type="button" class="tt-btn" data-tt="wider" title="Wider">⟷</button>' : ''}<button type="button" class="tt-btn tt-x" data-tt="toggle" title="${hidden ? 'Restore' : 'Hide'}">${hidden ? '＋' : '×'}</button>`;
+  el.appendChild(tools);
+  el.draggable = true;
+  if (titleEl) { titleEl.contentEditable = 'true'; titleEl.spellcheck = false; titleEl.draggable = false; titleEl.classList.add('tt-editable'); }
+}
+function resetTabLayout() {
+  const p = state.tab + ':';
+  for (const cid of Object.keys(state.layout.containers)) if (cid.startsWith(p)) delete state.layout.containers[cid];
+  for (const map of ['hidden', 'labels', 'spans']) for (const k of Object.keys(state.layout[map])) if (k.startsWith(p)) delete state.layout[map][k];
+}
+// clicks: tile tools + customize bar
+document.addEventListener('click', e => {
+  const tt = e.target.closest('.tile-tools [data-tt]');
+  if (tt && state.customize) {
+    const tile = tt.closest('[data-fqid]'), fqid = tile?.dataset.fqid; if (!fqid) return;
+    if (tt.dataset.tt === 'toggle') { if (state.layout.hidden[fqid]) delete state.layout.hidden[fqid]; else state.layout.hidden[fqid] = true; }
+    else { const cur = state.layout.spans[fqid] || currentSpan(tile); state.layout.spans[fqid] = tt.dataset.tt === 'wider' ? Math.min(12, cur + 1) : Math.max(3, cur - 1); }
+    saveLayout(); render(); return;
+  }
+  const cz = e.target.closest('.cz-bar [data-cz]');
+  if (cz) { if (cz.dataset.cz === 'reset') { resetTabLayout(); saveLayout(); render(); } else toggleCustomize(); }
+});
+// rename (don't re-render; keep the caret)
+document.addEventListener('input', e => {
+  const tEl = e.target.closest('.tt-editable'); if (!tEl || !state.customize) return;
+  const tile = tEl.closest('[data-fqid]'), fqid = tile?.dataset.fqid; if (!fqid) return;
+  const val = tEl.textContent.trim();
+  if (!val || val === tile.dataset.orig) delete state.layout.labels[fqid]; else state.layout.labels[fqid] = val.slice(0, 80);
+  saveLayout();
+});
+// drag to reorder within a container
+let dragKey = null, dragCid = null;
+document.addEventListener('dragstart', e => {
+  if (!state.customize) return;
+  if (e.target.isContentEditable) { e.preventDefault(); return; }
+  const tile = e.target.closest('[data-fqid]'); if (!tile) return;
+  dragKey = tile.dataset.key; dragCid = tile.closest('[data-cid]')?.dataset.cid;
+  tile.classList.add('dragging'); try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', dragKey); } catch {}
+});
+document.addEventListener('dragend', () => { document.querySelectorAll('.dragging').forEach(x => x.classList.remove('dragging')); dragKey = null; });
+document.addEventListener('dragover', e => {
+  if (!state.customize || !dragKey) return;
+  const cont = e.target.closest('[data-cid]'); if (!cont || cont.dataset.cid !== dragCid) return;
+  const over = e.target.closest('[data-fqid]'); e.preventDefault();
+  if (!over || over.dataset.key === dragKey) return;
+  const dragging = cont.querySelector(`[data-key="${CSS.escape(dragKey)}"]`); if (!dragging) return;
+  const r = over.getBoundingClientRect();
+  const sameRow = Math.abs(e.clientY - (r.top + r.height / 2)) < r.height / 2;
+  const before = sameRow ? e.clientX < r.left + r.width / 2 : e.clientY < r.top + r.height / 2;
+  cont.insertBefore(dragging, before ? over : over.nextSibling);
+});
+document.addEventListener('drop', e => {
+  if (!state.customize || !dragKey) return;
+  e.preventDefault();
+  const c = dragCid && document.querySelector(`[data-cid="${CSS.escape(dragCid)}"]`);
+  if (c) { state.layout.containers[dragCid] = [...c.children].filter(x => x.dataset.key).map(x => x.dataset.key); saveLayout(); }
+  dragKey = null;
+});
 
 // ---------- data + auth ----------
 async function api(path, options = {}) {
@@ -534,8 +653,9 @@ async function boot() {
   }
   $('signin').hidden = true; $('app').hidden = false;
   await loadOverrides();
+  await loadLayout();
   render();
-  setInterval(async () => { if (document.hidden || state.refreshing) return; try { await loadOverrides(); if (await load() || state.tab === 'leads' || state.tab === 'overview') render(); else $('freshness').textContent = `Updated ${ago(state.snap?.builtAt)}`; } catch {} }, 5 * 60000);
+  setInterval(async () => { if (document.hidden || state.refreshing || state.customize) return; try { await loadOverrides(); await loadLayout(); if (await load() || state.tab === 'leads' || state.tab === 'overview') render(); else $('freshness').textContent = `Updated ${ago(state.snap?.builtAt)}`; } catch {} }, 5 * 60000);
 }
 
 // ---------- events ----------

@@ -80,6 +80,17 @@ Notes:
 - Add people on the **Users** tab (pick a GHL user or type an email). Anyone not on the list who opens the dashboard is refused and shows up under "Asked for access" with a one-click Add.
 - A PIN sign-in is always viewer level.
 
+## Customizing tiles (senior admins)
+
+A **Customize tiles** button appears in the top bar for senior admins only. In customize mode, every tile (KPI stat or card) on every tab can be:
+
+- **Moved** — drag the ⠿ handle to reorder within its row/section.
+- **Removed / restored** — the × hides a tile; hidden tiles stay dimmed in customize mode with a ＋ to bring them back.
+- **Renamed** — click a tile's title and type.
+- **Resized** (cards only) — ‹› narrower / ⟷ wider across the 12-column grid.
+
+The layout is one shared setting (stored via `/api/layout`, senior-only to write) so everyone sees the same board; viewers and admins can't change it. "Reset this tab" clears the tab's customizations. Changes save automatically.
+
 ## Action queue edits (admins)
 
 Done, Dismiss and Snooze (to a date) on each queue item. An edit holds until GHL shows something new on that lead or caller (call, text, email, stage or status change), then the item comes back if it still applies. Edits are shared and kept 180 days. A conversation opened (read) in GHL also takes its item out ("Read in GHL" chip); this needs the token's conversations.readonly scope.

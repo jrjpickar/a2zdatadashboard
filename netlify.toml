@@ -42,6 +42,11 @@
   status = 200
 
 [[redirects]]
+  from = "/api/layout"
+  to = "/.netlify/functions/layout"
+  status = 200
+
+[[redirects]]
   from = "/api/ghl-webhook"
   to = "/.netlify/functions/ghl-webhook"
   status = 200
