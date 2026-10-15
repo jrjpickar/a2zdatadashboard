@@ -1,4 +1,7 @@
 // Sample snapshot for the local sandbox and the tests. Every name and number here is made up.
+// Stage names mirror A2Z's real pipelines so the sandbox exercises the live stage-name config.
+import { config } from '../lib/config.mjs';
+import { normName } from '../lib/normalize.mjs';
 const DAY = 86400000;
 function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
 
@@ -12,15 +15,25 @@ export function sampleSnapshot(now = Date.now(), seed = 7) {
   const at = (daysAgo, hour = 7 + r() * 10) => Math.min(now - 60000, dayStart - Math.floor(daysAgo) * DAY + hour * 3600000);
   const P = { demo: 'd5Ix1SlN3YpZ5gQewZUo', labor: 'RAP4Cqc1jKRTHaakYTL4', containers: 'F8i8hB7E5xHrJbJUXFr4', changeOrders: 'Nvk3EKhRzg5omo4BLCOK', hiring: 'VMYXilFR93XJEgprCi7j' };
   const stageDefs = {
-    [P.demo]: ['New Lead', 'Site Walk', 'Proposal Sent', 'Negotiating', 'Scheduled', 'Invoice'],
-    [P.labor]: ['New Lead', 'Proposal Sent', 'Booked', 'Invoice'],
-    [P.containers]: ['New Request', 'Proposal Sent', 'Scheduled', 'On Site'],
-    [P.changeOrders]: ['Change Order Sent', 'Approved'],
+    [P.demo]: ['New Lead', 'Proposal In Progress', 'Generate Proposal', 'Proposal Sent', 'In Negotiation', 'Pending Decision', 'Accepted', 'Work In Progress', 'Job Completed', 'Priced too low', 'Proposal Declined -Cold', 'Proposal Declined -Warm', 'Proposal Declined -Hot', 'Ghosted'],
+    [P.labor]: ['New Lead', 'Contacted', 'Send Packet', 'Pending Decision', 'Accepted / In Progress', 'Job Completed', 'Priced too low', 'Ghosted'],
+    [P.containers]: ['New Lead', 'Contacted', 'Proposal Sent', 'Pending Decision', 'Accepted', 'Work In Progress', 'Job Completed'],
+    [P.changeOrders]: ['Customer Requested', 'CO in Progress', 'Generate CO', 'CO Sent', 'Work in Progress', 'Completed', 'Declined'],
     [P.hiring]: ['Applied', 'Phone Screen', 'Interview', 'Onboarding']
   };
   const stages = {}, stageId = {};
   for (const [pid, names] of Object.entries(stageDefs)) names.forEach((n, i) => { const id = `${pid.slice(0, 4)}-s${i}`; stages[id] = { name: n, position: i, pipelineId: pid }; (stageId[pid] ||= {})[n] = id; });
-  const proposalStageIds = [stageId[P.demo]['Proposal Sent'], stageId[P.labor]['Proposal Sent'], stageId[P.containers]['Proposal Sent'], stageId[P.changeOrders]['Change Order Sent']];
+  // Detect the special stages the same way sync does: by matching config stage-name lists.
+  const cfg = config();
+  const matchIds = nameList => { const set = new Set(nameList.map(normName)); return Object.entries(stages).filter(([, s]) => set.has(normName(s.name))).map(([id]) => id); };
+  const proposalStageIds = matchIds(cfg.proposalStageNames);
+  const jobCompletedStageIds = matchIds(cfg.jobCompletedStageNames);
+  const lostStageIds = matchIds(cfg.lostStageNames);
+  const propNorm = new Set(cfg.proposalStageNames.map(normName)), jcNorm = new Set(cfg.jobCompletedStageNames.map(normName)), lostNorm = new Set(cfg.lostStageNames.map(normName));
+  const proposalName = pid => stageDefs[pid].find(n => propNorm.has(normName(n)));
+  const completedName = pid => stageDefs[pid].find(n => jcNorm.has(normName(n)));
+  const deadNames = pid => stageDefs[pid].filter(n => lostNorm.has(normName(n)));
+  const activeName = pid => { const mid = stageDefs[pid].filter(n => !lostNorm.has(normName(n)) && !jcNorm.has(normName(n))); return mid[mid.length - 1]; };
   const users = [{ id: 'u-maria', name: 'Maria Lopez' }, { id: 'u-dan', name: 'Dan Ortiz' }, { id: 'u-kim', name: 'Kim Tran' }];
   const first = ['Alex', 'Sam', 'Jordan', 'Chris', 'Pat', 'Taylor', 'Morgan', 'Casey', 'Jamie', 'Riley', 'Drew', 'Avery', 'Quinn', 'Reese', 'Rowan', 'Skyler'];
   const last = ['Nguyen', 'Garcia', 'Smith', 'Patel', 'Kim', 'Brown', 'Rivera', 'Lee', 'Walker', 'Hall', 'Young', 'King', 'Wright', 'Scott', 'Green', 'Baker'];
@@ -44,18 +57,22 @@ export function sampleSnapshot(now = Date.now(), seed = 7) {
       const age = d;
       let status = 'open', stage = names[0];
       const proposal = r() < 0.8;
-      if (age > 3 && proposal) stage = 'Proposal Sent';
+      if (age > 3 && proposal && proposalName(pid)) stage = proposalName(pid);
       if (age > 6) { const x = r(); status = x < 0.48 ? 'won' : x < 0.82 ? 'lost' : 'open'; }
-      if (status === 'won') stage = names[names.length - (r() < 0.5 ? 1 : 2)];
-      if (status === 'lost') stage = proposal ? 'Proposal Sent' : names[0];
+      if (status === 'won') stage = (r() < 0.6 && completedName(pid)) ? completedName(pid) : (activeName(pid) || completedName(pid) || names[names.length - 1]);
+      // Some lost deals are moved to a dead stage but never marked Lost in GHL (status stays open).
+      let dead = false;
+      if (status === 'lost') { const dn = deadNames(pid); if (dn.length) { stage = pick(dn); dead = true; if (r() < 0.4) status = 'open'; } else { stage = proposalName(pid) || names[0]; } }
       const value = pid === P.demo ? Math.round(8000 + r() * 60000) : pid === P.labor ? Math.round(900 + r() * 7000) : Math.round(450 + r() * 900);
       const sentAt = created + (r() < 0.7 ? r() * 0.8 : 0.8 + r() * 3) * DAY;
       const closedAt = created + (5 + r() * 20) * DAY;
+      const settled = status !== 'open' || dead;
       const id = `o${oppN++}`;
       opportunities.push({ id, name: `${c.name} - ${pid === P.demo ? 'Demo' : pid === P.labor ? 'Labor crew' : '40yd container'}`, pipelineId: pid, stageId: stageId[pid][stage], status, value,
-        createdAt: iso(created), updatedAt: iso(Math.min(now, closedAt)), stageChangedAt: iso(Math.min(now, status === 'open' ? sentAt : closedAt)), statusChangedAt: status === 'open' ? '' : iso(Math.min(now - 3600000, closedAt)),
+        createdAt: iso(created), updatedAt: iso(Math.min(now, closedAt)), stageChangedAt: iso(Math.min(now, settled ? closedAt : sentAt)), statusChangedAt: status === 'open' ? '' : iso(Math.min(now - 3600000, closedAt)),
         contactId: c.id, contactName: c.name, assignedTo: r() < 0.9 ? c.assignedTo : '', source: '', lostReason: status === 'lost' ? pick(['Price', 'Timing', 'Went with someone else', 'Price', 'No response', '']) : '' });
-      if (proposal && sentAt < now && (status !== 'open' || age > 3)) stageEvents[id] = { [stageId[pid]['Proposal Sent']]: { at: iso(sentAt), src: d > 300 ? 'baseline' : 'sync' } };
+      const pn = proposalName(pid);
+      if (pn && proposal && sentAt < now && (status !== 'open' || age > 3)) stageEvents[id] = { [stageId[pid][pn]]: { at: iso(sentAt), src: d > 300 ? 'baseline' : 'sync' } };
       if (r() < 0.9 || d > 2) {
         const reply = created + (r() < 0.6 ? r() * 0.7 : 0.7 + r() * 6) * 3600000;
         if (reply < now) (messageTouches[c.id] ||= []).push({ at: iso(reply), channel: pick(['sms', 'call', 'email']) });
@@ -63,8 +80,9 @@ export function sampleSnapshot(now = Date.now(), seed = 7) {
       if (proposal && r() < 0.6) { const fu = sentAt + (1 + r() * 3) * DAY; if (fu < now) (messageTouches[c.id] ||= []).push({ at: iso(fu), channel: 'sms' }); }
       if (status === 'won' && r() < 0.15 && d > 30) {
         const co = `o${oppN++}`;
-        opportunities.push({ id: co, name: `${c.name} - change order`, pipelineId: P.changeOrders, stageId: stageId[P.changeOrders]['Approved'], status: 'won', value: Math.round(value * (0.1 + r() * 0.3)), createdAt: iso(closedAt + DAY), updatedAt: iso(closedAt + 3 * DAY), stageChangedAt: iso(closedAt + 3 * DAY), statusChangedAt: iso(Math.min(now - 3600000, closedAt + 3 * DAY)), contactId: c.id, contactName: c.name, assignedTo: c.assignedTo, source: '', lostReason: '' });
-        stageEvents[co] = { [stageId[P.changeOrders]['Change Order Sent']]: { at: iso(closedAt + DAY), src: 'sync' } };
+        const coStage = r() < 0.7 ? completedName(P.changeOrders) : 'Work in Progress';
+        opportunities.push({ id: co, name: `${c.name} - change order`, pipelineId: P.changeOrders, stageId: stageId[P.changeOrders][coStage], status: 'won', value: Math.round(value * (0.1 + r() * 0.3)), createdAt: iso(closedAt + DAY), updatedAt: iso(closedAt + 3 * DAY), stageChangedAt: iso(closedAt + 3 * DAY), statusChangedAt: iso(Math.min(now - 3600000, closedAt + 3 * DAY)), contactId: c.id, contactName: c.name, assignedTo: c.assignedTo, source: '', lostReason: '' });
+        stageEvents[co] = { [stageId[P.changeOrders][proposalName(P.changeOrders)]]: { at: iso(closedAt + DAY), src: 'sync' } };
       }
     }
   }
@@ -188,7 +206,7 @@ export function sampleSnapshot(now = Date.now(), seed = 7) {
     settings: { containerFleet: { '10 Yard': 12, '40 Yard': 18 }, rentalDays: 7, followUpDays: 3, workdays: [1, 2, 3, 4, 5, 6], businessHours: { open: '07:00', close: '17:00' } },
     config: { timeZone: 'America/Los_Angeles', locationId: 'QUcu2PEAxPV1sQm1GQCq', ghlAppUrl: 'https://app.gohighlevel.com', pipelines: P,
       pipelineNames: { [P.demo]: 'Demo', [P.labor]: 'Labor', [P.containers]: 'Containers', [P.changeOrders]: 'Change Orders', [P.hiring]: 'Hiring' },
-      stages, proposalStageIds, customerTypes: ['general-contractor', 'developer', 'home-owner'], laborerTypes: ['laborer'], activeTemps: ['warm', 'hot', 'vip'], dormantTemps: ['cold'], contactTypeSource: 'GHL contact type' },
+      stages, proposalStageIds, jobCompletedStageIds, lostStageIds, customerTypes: ['general-contractor', 'developer', 'home-owner'], laborerTypes: ['laborer'], activeTemps: ['warm', 'hot', 'vip'], dormantTemps: ['cold'], contactTypeSource: 'GHL contact type' },
     users, opportunities, contacts, conversationState, stageEvents, hireEvents, messageTouches, callTouches, answeredInbound, inboundCalls, workflows, workflowStats,
     history: { stageTrackingSince: iso(now - 300 * DAY), hireTrackingSince: iso(now - 300 * DAY) },
     dispatch: { serverTime: iso(now), jobs, moves, moveRuns, jobDays, bookings, eodSheets, labor: crewPool.map(c => ({ id: c.id, name: c.name, phone: c.phone })), assets, temperatures: [], health: { makeRuns30d: [], pendingGhlScheduleSyncs: 0 } },

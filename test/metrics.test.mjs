@@ -159,6 +159,34 @@ test('backlog counts only jobs still on the board and paces on invoiced work', (
   assert.deepEqual([j.staleCount, j.staleValue], [1, 9000]);
 });
 
+test('jobs completed = won opportunities in a Job Completed stage, service/change-order pipelines only', () => {
+  const snap = base({
+    config: { ...base().config, stages: { Dc: { name: 'Job Completed', position: 5, pipelineId: 'D' }, Dn: { name: 'New Lead', position: 0, pipelineId: 'D' } }, jobCompletedStageIds: ['Dc'] },
+    opportunities: [
+      { id: 'a', pipelineId: 'D', stageId: 'Dc', status: 'won', value: 100, createdAt: '2026-09-01T16:00:00Z', stageChangedAt: '2026-10-05T16:00:00Z', contactId: 'c' },
+      { id: 'b', pipelineId: 'D', stageId: 'Dn', status: 'won', value: 50, createdAt: '2026-09-01T16:00:00Z', stageChangedAt: '2026-10-06T16:00:00Z', contactId: 'c' },
+      { id: 'c', pipelineId: 'H', stageId: 'Dc', status: 'won', value: 0, createdAt: '2026-09-01T16:00:00Z', stageChangedAt: '2026-10-06T16:00:00Z', contactId: 'c' },
+      { id: 'd', pipelineId: 'D', stageId: 'Dc', status: 'won', value: 70, createdAt: '2026-05-01T16:00:00Z', stageChangedAt: '2026-05-10T16:00:00Z', contactId: 'c' }
+    ],
+    dispatch: { jobs: [], moves: [], moveRuns: [], jobDays: [] }
+  });
+  const j = M.jobsSection(snap, { range: { from: '2026-10-01', to: '2026-10-12' }, now: NOW });
+  assert.equal(j.completed, 1); // 'a' only: 'b' not in Job Completed, 'c' is hiring, 'd' is out of the period
+});
+
+test('terminal dead stages count as lost even when GHL still shows Open, stage name is the reason', () => {
+  const snap = base({
+    config: { ...base().config, stages: { Dp: { name: 'Proposal Sent', position: 1, pipelineId: 'D' }, Dg: { name: 'Ghosted', position: 7, pipelineId: 'D' } }, proposalStageIds: ['Dp'], lostStageIds: ['Dg'] },
+    opportunities: [
+      { id: 'a', pipelineId: 'D', stageId: 'Dg', status: 'open', value: 500, createdAt: '2026-10-02T16:00:00Z', stageChangedAt: '2026-10-06T16:00:00Z', contactId: 'c' },
+      { id: 'b', pipelineId: 'D', stageId: 'Dp', status: 'won', value: 1000, createdAt: '2026-10-02T16:00:00Z', statusChangedAt: '2026-10-07T16:00:00Z', contactId: 'c' }
+    ]
+  });
+  const e = M.estimatesSection(snap, { range: { from: '2026-10-01', to: '2026-10-12' }, rep: '', now: NOW });
+  assert.deepEqual([e.won, e.lostCount, e.winRate, e.openValue], [1, 1, 0.5, 0]);
+  assert.equal(e.lostReasons[0].key, 'Ghosted');
+});
+
 test('queue: admin Done/Snooze hold until new GHL activity; read conversations drop out', () => {
   const snap = base({
     contacts: [{ id: 'c1', type: 'home-owner' }, { id: 'c2', type: 'home-owner' }, { id: 'c3', type: 'home-owner' }],

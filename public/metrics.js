@@ -113,8 +113,27 @@ export function buildIndex(snap) {
   const laborerIds = new Set([...(snap.contacts || []).filter(c => laborerTypes.has(c.type)).map(c => c.id), ...opps.filter(o => o.pipelineId === P.hiring).map(o => o.contactId), ...(snap.dispatch?.labor || []).map(w => w.id)].filter(Boolean));
   const laborerPhones = new Set([...(snap.contacts || []).filter(c => laborerIds.has(c.id)).map(c => c.phone), ...(snap.dispatch?.labor || []).map(w => w.phone)].filter(Boolean));
   const isLaborer = c => !!c && (laborerIds.has(c.id) || (!!c.phone && laborerPhones.has(c.phone)));
+  // Outcome of an opportunity, from both GHL status and the stage it sits in:
+  //   won  = status Won, or in a "Job Completed" stage
+  //   lost = status Lost/Abandoned, or in a terminal dead-deal stage (Declined, Ghosted, Priced Too Low, ...)
+  //   open = anything else still in play
+  const jobCompletedStages = new Set(cfg.jobCompletedStageIds || []);
+  const lostStages = new Set(cfg.lostStageIds || []);
+  const outcome = o => {
+    if (!o) return 'open';
+    if (o.status === 'won' || jobCompletedStages.has(o.stageId)) return 'won';
+    if (o.status === 'lost' || o.status === 'abandoned' || lostStages.has(o.stageId)) return 'lost';
+    return 'open';
+  };
+  const isWon = o => outcome(o) === 'won';
+  const isLost = o => outcome(o) === 'lost';
+  const isOpenOpp = o => outcome(o) === 'open';
+  // When an outcome came from the stage rather than a status change, GHL's status-change time can be
+  // blank, so fall back to the stage-change time for "when was this won/lost".
+  const outcomeDate = o => o.statusChangedAt || o.stageChangedAt || o.updatedAt || o.createdAt;
+  const lostReasonOf = o => o.lostReason || (lostStages.has(o.stageId) ? (cfg.stages?.[o.stageId]?.name || 'Lost') : 'No reason given');
   const wonByContact = new Map();
-  for (const o of opps) if (jobPipes.has(o.pipelineId) && o.status === 'won' && o.contactId) (wonByContact.get(o.contactId) || wonByContact.set(o.contactId, []).get(o.contactId)).push(o.statusChangedAt || o.updatedAt || o.createdAt);
+  for (const o of opps) if (jobPipes.has(o.pipelineId) && isWon(o) && o.contactId) (wonByContact.get(o.contactId) || wonByContact.set(o.contactId, []).get(o.contactId)).push(outcomeDate(o));
   for (const l of wonByContact.values()) l.sort();
   const temps = new Map((snap.dispatch?.temperatures || []).map(t => [t.contactId, String(t.value || '').toLowerCase().replace(/\s+/g, '-')]));
   const touchCache = new Map();
@@ -142,6 +161,7 @@ export function buildIndex(snap) {
     return null;
   }
   const idx = { cfg, P, tz, contacts, opps, servicePipes, jobPipes, isLaborer, laborerPhones, wonByContact, touches, temps, proposalByPipe, sentAt,
+    jobCompletedStages, lostStages, outcome, isWon, isLost, isOpenOpp, outcomeDate, lostReasonOf,
     settings: { businessHours: { open: '07:00', close: '17:00' }, workdays: [1, 2, 3, 4, 5, 6], rentalDays: 7, followUpDays: 3, estimateDays: 3, containerFleet: {}, ...(snap.settings || {}) } };
   idx.serviceName = id => ({ [P.demo]: 'Demo', [P.labor]: 'Labor', [P.containers]: 'Containers', [P.changeOrders]: 'Change orders', [P.hiring]: 'Hiring' }[id] || cfg.pipelineNames?.[id] || 'Other');
   idx.isRepeat = (contactId, beforeIso) => (wonByContact.get(contactId) || []).some(t => t < beforeIso);
@@ -185,7 +205,7 @@ export function leadsSection(snap, { range, rep, now }) {
     response: {
       median: median(responded.map(r => r.resp.minutes)),
       within60: ratio(eligible60.filter(r => r.resp && r.resp.minutes <= 60).length, eligible60.length),
-      responded: responded.length, awaiting: rows.filter(r => !r.resp && r.o.status === 'open').length, eligible60: eligible60.length
+      responded: responded.length, awaiting: rows.filter(r => !r.resp && idx.isOpenOpp(r.o)).length, eligible60: eligible60.length
     },
     daily: datesIn(range, 400).map(d => ({ date: d, count: (daily.get(d) || []).length })),
     rows
@@ -216,7 +236,7 @@ export function queueState(snap, { rep, now, overrides = {} }) {
   const since = days => new Date(toMs(now) - days * DAY).toISOString();
   const latest = (...l) => l.filter(Boolean).sort().pop() || '';
   for (const o of leadOpps(idx, rep)) {
-    if (o.status !== 'open') continue;
+    if (!idx.isOpenOpp(o)) continue;
     const c = idx.contacts.get(o.contactId);
     const name = c?.name || o.contactName || o.name;
     const touches = idx.touches(o.contactId);
@@ -281,16 +301,16 @@ export function estimatesSection(snap, { range, rep, now }) {
   const created = jobOpps.filter(o => inRange(localDate(o.createdAt, tz), range));
   const turn = created.map(o => { const sa = idx.sentAt(o); return { o, sa, mins: sa ? businessMinutes(o.createdAt, sa.at, s, tz) : null, age: businessMinutes(o.createdAt, now, s, tz, bdm + 1) }; });
   const timed = turn.filter(r => r.sa);
-  const missed = turn.filter(r => !r.sa && r.o.status === 'open' && r.age > bdm);
-  const pending = turn.filter(r => !r.sa && r.o.status === 'open' && r.age <= bdm);
-  const closed = jobOpps.filter(o => (o.status === 'won' || o.status === 'lost') && inRange(localDate(o.statusChangedAt || o.updatedAt, tz), range));
-  const won = closed.filter(o => o.status === 'won');
+  const missed = turn.filter(r => !r.sa && idx.isOpenOpp(r.o) && r.age > bdm);
+  const pending = turn.filter(r => !r.sa && idx.isOpenOpp(r.o) && r.age <= bdm);
+  const closed = jobOpps.filter(o => (idx.isWon(o) || idx.isLost(o)) && inRange(localDate(idx.outcomeDate(o), tz), range));
+  const won = closed.filter(o => idx.isWon(o));
   const winSplit = key => [...groupBy(closed, key)].map(([k, l]) => {
-    const w = l.filter(o => o.status === 'won');
-    return { key: k, won: w.length, lost: l.length - w.length, rate: ratio(w.length, l.length), wonValue: sum(w, o => o.value), lostValue: sum(l.filter(o => o.status === 'lost'), o => o.value), rateValue: ratio(sum(w, o => o.value), sum(l, o => o.value)) };
+    const w = l.filter(o => idx.isWon(o));
+    return { key: k, won: w.length, lost: l.length - w.length, rate: ratio(w.length, l.length), wonValue: sum(w, o => o.value), lostValue: sum(l.filter(o => idx.isLost(o)), o => o.value), rateValue: ratio(sum(w, o => o.value), sum(l, o => o.value)) };
   }).sort((a, b) => (b.won + b.lost) - (a.won + a.lost));
   const c = o => idx.contacts.get(o.contactId);
-  const open = jobOpps.filter(o => o.status === 'open');
+  const open = jobOpps.filter(o => idx.isOpenOpp(o));
   const stages = idx.cfg.stages || {};
   const byStage = [...groupBy(open, o => o.stageId)].map(([id, l]) => ({ id, name: stages[id]?.name || 'Unknown stage', pipeline: idx.serviceName(stages[id]?.pipelineId || l[0].pipelineId), position: stages[id]?.position ?? 99, count: l.length, value: sum(l, o => o.value) }))
     .sort((a, b) => a.pipeline.localeCompare(b.pipeline) || a.position - b.position);
@@ -305,7 +325,7 @@ export function estimatesSection(snap, { range, rep, now }) {
     aging[k]++; agingValue[k] += o.value;
     waiting.push({ o, days: d, name: c(o)?.name || o.contactName || o.name, link: idx.contactLink(o.contactId) });
   }
-  const lost = closed.filter(o => o.status === 'lost');
+  const lost = closed.filter(o => idx.isLost(o));
   const wonService = [...groupBy(won.filter(o => idx.servicePipes.includes(o.pipelineId) || o.pipelineId === idx.P.changeOrders), o => idx.serviceName(o.pipelineId))].map(([k, l]) => ({ key: k, count: l.length, value: sum(l, o => o.value), avg: sum(l, o => o.value) / l.length }));
   return {
     sent: sentRows.length, sentValue: sum(sentRows, r => r.o.value),
@@ -316,7 +336,7 @@ export function estimatesSection(snap, { range, rep, now }) {
     byService: winSplit(o => idx.serviceName(o.pipelineId)), byType: winSplit(o => typeLabel(c(o)?.type)),
     avgByService: wonService, byStage, aging: Object.entries(aging).map(([k, v]) => ({ key: k, count: v, value: agingValue[k] })),
     waiting: waiting.sort((a, b) => b.days - a.days).slice(0, 50),
-    lostReasons: [...groupBy(lost, o => o.lostReason || 'No reason given')].map(([k, l]) => ({ key: k, count: l.length, value: sum(l, o => o.value) })).sort((a, b) => b.count - a.count),
+    lostReasons: [...groupBy(lost, o => idx.lostReasonOf(o))].map(([k, l]) => ({ key: k, count: l.length, value: sum(l, o => o.value) })).sort((a, b) => b.count - a.count),
     openValue: sum(open, o => o.value)
   };
 }
@@ -399,8 +419,14 @@ export function jobsSection(snap, { range, now }) {
   const days = jobDayMap(snap);
   const byJobDays = groupBy(days, x => x.jobId);
   const scheduledIds = new Set(days.filter(x => inRange(x.date, range)).map(x => x.jobId));
-  const completed = jobs.filter(j => j.status === 'completed' && inRange(localDate(j.closedAt, tz), range));
-  const onTimeRows = completed.map(j => {
+  // Jobs completed = GHL opportunities in Demo, Labor, Containers or Change Orders sitting in a
+  // "Job Completed" stage (that stage counts as won). Dated by when they entered it.
+  const completedDate = o => localDate(o.stageChangedAt || o.statusChangedAt || o.updatedAt, tz);
+  const isJobCompleted = o => idx.jobPipes.has(o.pipelineId) && idx.jobCompletedStages.has(o.stageId) && o.status !== 'lost';
+  const completed = idx.opps.filter(o => isJobCompleted(o) && inRange(completedDate(o), range));
+  // On-time adherence still needs the dispatch board's scheduled dates, so it reads board completions.
+  const boardCompleted = jobs.filter(j => j.status === 'completed' && inRange(localDate(j.closedAt, tz), range));
+  const onTimeRows = boardCompleted.map(j => {
     const ds = byJobDays.get(j.jobId) || [];
     const planned = [j.reportEndDate, j.reportDate, ...ds.map(x => x.date)].filter(x => /^\d{4}-\d{2}-\d{2}$/.test(x || '')).sort().pop() || '';
     const closed = localDate(j.closedAt, tz);
@@ -414,7 +440,7 @@ export function jobsSection(snap, { range, now }) {
   const boardStages = new Set(idx.cfg.boardStageIds || []);
   const onBoard = j => {
     const o = oppById.get(j.jobId);
-    if (o) return o.status === 'won' && (o.pipelineId === idx.P.changeOrders || !boardStages.size || boardStages.has(o.stageId));
+    if (o) return idx.isWon(o) && !idx.jobCompletedStages.has(o.stageId) && (o.pipelineId === idx.P.changeOrders || !boardStages.size || boardStages.has(o.stageId));
     return (j.reportEndDate || j.reportDate || '') >= today;
   };
   const valueOf = j => j.value || oppById.get(j.jobId)?.value || 0;
@@ -438,7 +464,7 @@ export function jobsSection(snap, { range, now }) {
     const doc = (L.invoices || []).find(i => i.opportunityId === id), ev = (L.invoiceStageEvents || {})[id] || {};
     return { date: doc?.date || (ev.sent ? localDate(ev.sent, tz) : ''), value: doc?.total || oppById.get(id)?.value || 0, stage: (L.invoiceStages || {})[id] };
   }).filter(x => x.date && x.stage !== 'draft' && x.stage !== 'hidden') : [];
-  const completedJobs = jobs.filter(j => j.status === 'completed').map(j => ({ date: localDate(j.closedAt, tz), value: valueOf(j) }));
+  const completedJobs = idx.opps.filter(isJobCompleted).map(o => ({ date: completedDate(o), value: o.value || 0 }));
   const paceSource = invoiced.filter(x => x.date >= weeks[0]).length >= 3 ? 'invoiced' : 'completed';
   const paceRows = paceSource === 'invoiced' ? invoiced : completedJobs;
   const weekly = weeks.map(w => ({ week: w, value: sum(paceRows.filter(x => inWeek(x.date, w)), x => x.value), count: paceRows.filter(x => inWeek(x.date, w)).length }));
@@ -489,10 +515,10 @@ export function crewsSection(snap, { range, rep, now }) {
   const available = active.length * workDates.length;
   const ahead = datesIn({ from: today, to: addDays(today, 13) }).map(date => ({ date, booked: sum(days.filter(x => x.date === date), x => x.crew.length), available: work.has(weekday(date)) ? active.length : 0 }));
   const bookedIds = new Set((snap.dispatch?.bookings || []).map(b => b.opportunityId));
-  const laborWon = idx.opps.filter(o => o.pipelineId === idx.P.labor && o.status === 'won' && inRange(localDate(o.statusChangedAt || o.updatedAt, tz), range) && idx.repMatch(o, rep));
+  const laborWon = idx.opps.filter(o => o.pipelineId === idx.P.labor && idx.isWon(o) && inRange(localDate(idx.outcomeDate(o), tz), range) && idx.repMatch(o, rep));
   const board = laborWon.filter(o => bookedIds.has(o.id)).length;
-  const custWins = idx.opps.filter(o => idx.jobPipes.has(o.pipelineId) && o.status === 'won' && o.contactId && inRange(localDate(o.statusChangedAt || o.updatedAt, tz), range) && !idx.isLaborer(idx.contacts.get(o.contactId)) && idx.repMatch(o, rep));
-  const firstWin = new Map(); for (const o of custWins) { const t = o.statusChangedAt || o.updatedAt; if (!firstWin.has(o.contactId) || t < firstWin.get(o.contactId)) firstWin.set(o.contactId, t); }
+  const custWins = idx.opps.filter(o => idx.jobPipes.has(o.pipelineId) && idx.isWon(o) && o.contactId && inRange(localDate(idx.outcomeDate(o), tz), range) && !idx.isLaborer(idx.contacts.get(o.contactId)) && idx.repMatch(o, rep));
+  const firstWin = new Map(); for (const o of custWins) { const t = idx.outcomeDate(o); if (!firstWin.has(o.contactId) || t < firstWin.get(o.contactId)) firstWin.set(o.contactId, t); }
   const customers = [...firstWin].map(([id, t]) => ({ id, type: idx.contacts.get(id)?.type || '', repeat: idx.isRepeat(id, t) }));
   const workerDays = new Map();
   for (const x of days.filter(x => inRange(x.date, pastRange))) for (const w of x.crew) { const k = workerKey(w); const e = workerDays.get(k) || workerDays.set(k, { name: w.name, days: 0 }).get(k); e.days++; }
@@ -517,7 +543,7 @@ export function hiringSection(snap, { range, now }) {
   const events = snap.hireEvents || {};
   const hires = Object.entries(events).filter(([, e]) => e.at && inRange(localDate(e.at, tz), range));
   const stages = idx.cfg.stages || {};
-  const openByStage = [...groupBy(hiringOpps.filter(o => o.status === 'open'), o => o.stageId)].map(([id, l]) => ({ key: stages[id]?.name || 'Unknown stage', position: stages[id]?.position ?? 99, count: l.length })).sort((a, b) => a.position - b.position);
+  const openByStage = [...groupBy(hiringOpps.filter(o => idx.isOpenOpp(o)), o => o.stageId)].map(([id, l]) => ({ key: stages[id]?.name || 'Unknown stage', position: stages[id]?.position ?? 99, count: l.length })).sort((a, b) => a.position - b.position);
   const months = []; for (let i = 11; i >= 0; i--) { const d = new Date(Date.UTC(Number(today.slice(0, 4)), Number(today.slice(5, 7)) - 1 - i, 1)); months.push(d.toISOString().slice(0, 7)); }
   const monthly = months.map(m => ({ month: m, hires: Object.values(events).filter(e => e.at && localDate(e.at, tz).startsWith(m)).length, applicants: hiringOpps.filter(o => localDate(o.createdAt, tz).startsWith(m)).length }));
   // Pool
@@ -595,7 +621,7 @@ export function leadFunnel(snap, { range, rep, now, pipeline }) {
   const tz = idx.tz, bdm = businessDayMinutes(idx.settings);
   const pipe = pipeline ? idx.P[pipeline] || pipeline : '';
   const leads = leadOpps(idx, rep).filter(o => inRange(localDate(o.createdAt, tz), range) && (!pipe || o.pipelineId === pipe));
-  const rows = leads.map(o => ({ o, resp: firstResponse(idx, o), sent: idx.sentAt(o), won: o.status === 'won', lost: o.status === 'lost' }));
+  const rows = leads.map(o => ({ o, resp: firstResponse(idx, o), sent: idx.sentAt(o), won: idx.isWon(o), lost: idx.isLost(o) }));
   const st = (key, list) => ({ key, count: list.length, value: sum(list, r => r.o.value) });
   // Funnel stages are strict subsets so the funnel never widens: sending an estimate (or
   // a win) counts as having responded, even if no reply touch was recorded.
@@ -625,10 +651,10 @@ export function hiringFunnel(snap, { range, now }) {
   const firstBooked = new Map();
   for (const x of jobDayMap(snap)) for (const w of x.crew) { const id = (w.id && idx.contacts.has(w.id) && w.id) || byPhone.get(w.phone) || byName.get(String(w.name).toLowerCase()); if (id && (!firstBooked.has(id) || x.date < firstBooked.get(id))) firstBooked.set(id, x.date); }
   const hired = rows.filter(o => active.includes(idx.tempOf(contact(o))));
-  const screened = rows.filter(o => (stages[o.stageId]?.position ?? 0) > 0 || o.status === 'won' || active.includes(idx.tempOf(contact(o))));
+  const screened = rows.filter(o => (stages[o.stageId]?.position ?? 0) > 0 || idx.isWon(o) || active.includes(idx.tempOf(contact(o))));
   const booked = hired.filter(o => (firstBooked.get(o.contactId) || '') >= localDate(o.createdAt, tz));
   const st = (key, list) => ({ key, count: list.length, value: 0 });
-  return { stages: [st('applied', rows), st('screened', screened), st('hired', hired), st('booked', booked)], dormant: rows.filter(o => (idx.cfg.dormantTemps || ['cold']).includes(idx.tempOf(contact(o)))).length, lost: rows.filter(o => o.status === 'lost').length, open: rows.filter(o => o.status === 'open' && !active.includes(idx.tempOf(contact(o)))).length };
+  return { stages: [st('applied', rows), st('screened', screened), st('hired', hired), st('booked', booked)], dormant: rows.filter(o => (idx.cfg.dormantTemps || ['cold']).includes(idx.tempOf(contact(o)))).length, lost: rows.filter(o => idx.isLost(o)).length, open: rows.filter(o => idx.isOpenOpp(o) && !active.includes(idx.tempOf(contact(o)))).length };
 }
 
 // ---------- workflows (GHL automation stats, from the browser feed) ----------
@@ -685,16 +711,19 @@ export function dataQuality(snap, { now }) {
   const leads = leadOpps(idx, '');
   const recent = leads.filter(o => o.createdAt >= new Date(toMs(now) - 90 * DAY).toISOString());
   const c = o => idx.contacts.get(o.contactId);
-  const won = idx.opps.filter(o => idx.jobPipes.has(o.pipelineId) && o.status === 'won');
+  const won = idx.opps.filter(o => idx.jobPipes.has(o.pipelineId) && idx.isWon(o));
   const pool = laborers(snap);
   const checks = [];
   const add = (area, label, bad, total, help, severity = 'warn') => checks.push({ area, label, bad, total, share: total ? bad / total : 0, help, severity: bad ? severity : 'ok' });
   add('GHL', 'Leads (last 90 days) with no contact type', recent.filter(o => !c(o)?.type).length, recent.length, 'Set Contact Type to General-contractor, Developer or Home-owner so win rate and repeat customers split by type.');
   add('GHL', 'Leads (last 90 days) with no source', recent.filter(o => !(o.source || c(o)?.source)).length, recent.length, 'Lead source comes from the opportunity source, else the contact source.');
   add('GHL', 'Won jobs with no value', won.filter(o => !o.value).length, won.length, 'Revenue booked and win rate by dollars use the opportunity value.');
-  add('GHL', 'Open leads with no assigned user', leads.filter(o => o.status === 'open' && !o.assignedTo && !c(o)?.assignedTo).length, leads.filter(o => o.status === 'open').length, 'Unassigned leads drop out when you filter by rep.', 'info');
+  add('GHL', 'Open leads with no assigned user', leads.filter(o => idx.isOpenOpp(o) && !o.assignedTo && !c(o)?.assignedTo).length, leads.filter(o => idx.isOpenOpp(o)).length, 'Unassigned leads drop out when you filter by rep.', 'info');
+  const deadButOpen = idx.opps.filter(o => idx.jobPipes.has(o.pipelineId) && o.status === 'open' && idx.lostStages.has(o.stageId));
+  add('GHL', 'Opportunities in a dead stage (Declined, Ghosted, …) still marked Open in GHL', deadButOpen.length, idx.opps.filter(o => idx.jobPipes.has(o.pipelineId)).length, 'The dashboard already counts these as lost by their stage. Marking them Lost in GHL keeps both in sync.', 'info');
   const pipesNoProposal = idx.servicePipes.concat(idx.P.changeOrders).filter(p => p && !idx.proposalByPipe.has(p)).map(idx.serviceName);
   if (pipesNoProposal.length) checks.push({ area: 'GHL', label: `No "Proposal Sent" / "Change Order Sent" stage found in: ${pipesNoProposal.join(', ')}`, bad: pipesNoProposal.length, total: 4, share: 1, help: 'Estimates sent and turnaround need that stage name (PROPOSAL_STAGE_NAMES changes it).', severity: 'crit' });
+  if (!(snap.config?.jobCompletedStageIds || []).length) checks.push({ area: 'GHL', label: 'No "Job Completed" stage found in Demo, Labor, Containers or Change Orders', bad: 1, total: 1, share: 1, help: 'Jobs completed counts won opportunities in a "Job Completed" stage. Rename the stage or set JOB_COMPLETED_STAGE_NAMES.', severity: 'crit' });
   add('GHL', 'Contacts typed Laborer with no temperature', pool.filter(p => !p.temp).length, pool.length, 'Set Temperature (Cold / Warm / Hot / VIP) so they count as dormant or active.');
   const hiring = idx.opps.filter(o => o.pipelineId === idx.P.hiring);
   add('GHL', 'Hiring pipeline contacts not typed Laborer', hiring.filter(o => !idx.isLaborer(c(o))).length, hiring.length, 'They are left out of the labor pool and hire counts.');
@@ -709,6 +738,8 @@ export function dataQuality(snap, { now }) {
   add('Twilio', 'Inbound calls from numbers not on a GHL contact', inbound.filter(x => !byPhone.has(x.from)).length, inbound.length, 'Usually new callers or spam. Their missed calls still count.', 'info');
   return {
     feeds: snap.feeds || {}, checks, history: snap.history || {}, settings: idx.settings, config: snap.config || {},
-    proposalStages: (snap.config?.proposalStageIds || []).map(id => ({ id, name: snap.config.stages[id]?.name, pipeline: idx.serviceName(snap.config.stages[id]?.pipelineId) }))
+    proposalStages: (snap.config?.proposalStageIds || []).map(id => ({ id, name: snap.config.stages[id]?.name, pipeline: idx.serviceName(snap.config.stages[id]?.pipelineId) })),
+    jobCompletedStages: (snap.config?.jobCompletedStageIds || []).map(id => ({ id, name: snap.config.stages[id]?.name, pipeline: idx.serviceName(snap.config.stages[id]?.pipelineId) })),
+    lostStages: (snap.config?.lostStageIds || []).map(id => ({ id, name: snap.config.stages[id]?.name, pipeline: idx.serviceName(snap.config.stages[id]?.pipelineId) }))
   };
 }

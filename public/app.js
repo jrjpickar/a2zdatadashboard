@@ -176,7 +176,7 @@ function renderWork() {
     : `${money(j.openValue)} open ÷ ${money(j.avgWeeklyCompleted)}/wk ${j.paceSource === 'invoiced' ? 'invoiced' : 'completed'}${j.backlogWeeksCrew == null ? '' : ` · ${dec(j.backlogWeeksCrew)} wk crew-scheduled`}`;
   return `<div class="kpis">
     ${kpi('Jobs scheduled', int(j.scheduled), j.scheduledByKind.map(k => `${int(k.count)} ${k.key.toLowerCase()}`).join(' · '))}
-    ${kpi('Jobs completed', int(j.completed), j.cancelled ? `${int(j.cancelled)} cancelled` : '')}
+    ${kpi('Jobs completed', int(j.completed), `Won · Job Completed stage${j.cancelled ? ` · ${int(j.cancelled)} cancelled on board` : ''}`)}
     ${kpi('Finished on scheduled date', pct(j.onTimeRate), `${int(j.onTimeKnown)} completed jobs with a scheduled end`, j.onTimeRate != null && j.onTimeRate < 0.8 ? 'warn' : '')}
     ${kpi('Backlog', j.backlogWeeks == null ? '—' : dec(j.backlogWeeks) + ' weeks', backlogSub)}
     ${kpi('Open jobs', int(j.openJobs), j.staleCount ? `${int(j.staleCount)} more look stale (${money(j.staleValue)}), not counted` : 'On the dispatch board, active in the last 60 days')}
@@ -294,7 +294,8 @@ function renderQuality() {
     ['Estimate sent', 'The opportunity entered Proposal Sent (Change Order Sent for change orders). Stage history is recorded by this dashboard from ' + (dq.history.stageTrackingSince ? shortDate(dq.history.stageTrackingSince) : 'its first sync') + '; earlier proposals use GHL\'s last stage change.'],
     ['Sent within / turnaround', 'Opportunities created in the period: share whose proposal was sent within the business-day target (3 by default, Settings) of the opportunity being created. Still-open ones past the target count as misses; ones still inside it, or closed without a proposal, are left out. Turnaround = business hours from creation to Proposal Sent.'],
     ['Action queue edits', 'Admins can mark an item Done, Dismiss it or Snooze it to a date. The edit holds until GHL shows something new on that lead or caller (a call, text, email, stage or status change); then the item comes back if it still applies. A conversation opened (read) in GHL also takes its item out of the queue.'],
-    ['Jobs won / revenue booked', 'Opportunities marked Won, dated by GHL\'s status change. Revenue = their value. Win rate = won ÷ (won + lost) decided in the period.'],
+    ['Jobs won / revenue booked', 'Opportunities marked Won, or sitting in a Job Completed stage, dated by GHL\'s status or stage change. Revenue = their value. Win rate = won ÷ (won + lost) decided in the period.'],
+    ['Lost / dead deals', 'An opportunity marked Lost, or moved to a terminal "dead" stage (Declined, Priced Too Low, Ghosted, …), counts as lost even if GHL still shows it Open — and the stage name becomes the lost reason. Set LOST_STAGE_NAMES to match your stages. These drop out of open pipeline, the action queue and backlog.'],
     ['Containers out', 'Container drops minus pickups per customer from the dispatch board\'s runs (Reset day / Complete). Swaps and dump & returns keep the count. Quantity, not yards.'],
     ['Crew utilization', 'Crew-days on jobs (each worker each day, from Complete EOD Sheet logs plus scheduled days) ÷ active laborers × work days, up to today.'],
     ['Hired / active', 'A laborer whose temperature is warm, hot or VIP. Cold = dormant. Hire date = the first sync that saw them warm or above.'],
@@ -305,6 +306,8 @@ function renderQuality() {
     ${card(7, 'Coverage checks', '', checks)}
     ${card(6, 'Detected settings', '', `<dl class="defs">
       <dt>Estimate-sent stages</dt><dd>${dq.proposalStages.length ? dq.proposalStages.map(s => esc(`${s.pipeline}: ${s.name}`)).join('<br>') : '<span style="color:var(--crit)">None found</span>'}</dd>
+      <dt>Job-completed stages</dt><dd>${dq.jobCompletedStages.length ? dq.jobCompletedStages.map(s => esc(`${s.pipeline}: ${s.name}`)).join('<br>') : '<span style="color:var(--crit)">None found</span>'}</dd>
+      <dt>Lost / dead stages</dt><dd>${dq.lostStages.length ? dq.lostStages.map(s => esc(`${s.pipeline}: ${s.name}`)).join('<br>') : 'None detected'}</dd>
       <dt>Contact type read from</dt><dd>${esc(dq.config.contactTypeSource || '—')}</dd>
       <dt>Customer types</dt><dd>${esc((dq.config.customerTypes || []).map(M.typeLabel).join(', '))}</dd>
       <dt>Business hours</dt><dd>${esc(dq.settings.businessHours.open)}–${esc(dq.settings.businessHours.close)}, ${esc(dq.settings.workdays.map(d => ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d]).join(' '))}</dd>
