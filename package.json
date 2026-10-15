@@ -1,7 +1,7 @@
 {
   "name": "a2z-kpi-dashboard",
   "private": true,
-  "version": "1.9.0",
+  "version": "1.10.0",
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",

@@ -350,10 +350,26 @@ function funnelHtml(f, { hiring = false } = {}) {
     }
   });
   const [L, , E, W] = f.stages;
+  const total = L.count;
+  const branchItems = hiring
+    ? [{ label: 'Still in process', count: f.open, tone: 'open' }, { label: 'Dormant', count: f.dormant, tone: 'open' }, { label: 'Lost', count: f.lost, tone: 'lost' }]
+    : [{ label: 'Still open', count: f.open, tone: 'open' }, ...(f.lostBreakdown || []).map(b => ({ label: b.key, count: b.count, value: b.value, tone: 'lost' }))];
   const summary = hiring
-    ? `<div class="fn-summary"><span>Applicant → hired <b>${pct(L.count ? f.stages[2].count / L.count : null)}</b></span><span>Hired → booked <b>${pct(f.stages[2].count ? W.count / f.stages[2].count : null)}</b></span><span>Still in process <b>${int(f.open)}</b> · dormant <b>${int(f.dormant)}</b> · lost <b>${int(f.lost)}</b></span></div>`
-    : `<div class="fn-summary"><span>Lead → won <b>${pct(L.count ? W.count / L.count : null)}</b></span><span>Estimate → won <b>${pct(E.count ? W.count / E.count : null)}</b></span><span>Median first response <b>${mins(f.medianResponse)}</b></span><span>Still open <b>${int(f.open)}</b> · lost <b>${int(f.lost)}</b></span></div>`;
-  return `<div class="fn fn-compact${funnelAnimated ? '' : ' fn-anim'}">${parts.join('')}</div>${summary}`;
+    ? `<div class="fn-summary"><span>Applicant → hired <b>${pct(L.count ? f.stages[2].count / L.count : null)}</b></span><span>Hired → booked <b>${pct(f.stages[2].count ? W.count / f.stages[2].count : null)}</b></span></div>`
+    : `<div class="fn-summary"><span>Lead → won <b>${pct(L.count ? W.count / L.count : null)}</b></span><span>Estimate → won <b>${pct(E.count ? W.count / E.count : null)}</b></span><span>Median first response <b>${mins(f.medianResponse)}</b></span></div>`;
+  return `<div class="fn fn-compact${funnelAnimated ? '' : ' fn-anim'}">${parts.join('')}</div>${funnelBranches(branchItems, total, W.count, hiring ? 'hired' : 'won', hiring ? 'applicants' : 'leads')}${summary}`;
+}
+// The red/amber branches peeling off the funnel: where the non-won cohort ended up.
+function funnelBranches(items, total, endCount, endWord, base) {
+  const shown = items.filter(i => i.count > 0);
+  if (!shown.length) return '';
+  const widthOf = n => Math.max(0.05, Math.sqrt((n || 0) / (total || 1)));
+  return `<div class="fn-branches"><div class="fn-branches-head">↳ Didn't make it (${int(endCount)} ${esc(endWord)} of ${int(total)})</div>${shown.map(i => `
+    <div class="fn-branch">
+      <span class="fn-branch-label" title="${esc(i.label)}">${esc(i.label)}</span>
+      <div class="fn-branch-track"><div class="fn-branch-bar ${i.tone === 'lost' ? 'is-lost' : 'is-open'}" style="--w:${(widthOf(i.count) * 100).toFixed(1)}%" title="${esc(i.label)}: ${int(i.count)}${i.value ? ' · ' + money(i.value) : ''}">${int(i.count)}</div></div>
+      <span class="fn-branch-out"><b>${pct(total ? i.count / total : null)}</b><span>of ${esc(base)}</span></span>
+    </div>`).join('')}</div>`;
 }
 function funnelsHtml(o) {
   const html = [['labor', 'Labor'], ['demo', 'Demo'], ['containers', 'Containers']].map(([k, t]) => card(6, `${t} funnel`, `${t} leads created in this period and where they are now`, funnelHtml(M.leadFunnel(state.snap, { ...o, pipeline: k }))))

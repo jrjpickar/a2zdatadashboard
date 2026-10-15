@@ -629,9 +629,13 @@ export function leadFunnel(snap, { range, rep, now, pipeline }) {
   const responded = rows.filter(r => r.resp || r.sent || r.won);
   const sent = rows.filter(r => r.sent || r.won);
   const won = rows.filter(r => r.won);
+  // Where the non-won leads went, broken out by lost reason / dead stage (Declined -Cold/Warm/Hot,
+  // Priced too low, Ghosted, …) — the branches off the funnel.
+  const lostRows = rows.filter(r => r.lost);
+  const lostBreakdown = [...groupBy(lostRows, r => idx.lostReasonOf(r.o))].map(([k, l]) => ({ key: k, count: l.length, value: sum(l, r => r.o.value) })).sort((a, b) => b.count - a.count);
   return {
     stages: [st('leads', rows), st('responded', responded), st('estimate', sent), st('won', won)],
-    lost: rows.filter(r => r.lost).length, open: rows.filter(r => !r.won && !r.lost).length,
+    lost: lostRows.length, open: rows.filter(r => !r.won && !r.lost).length, lostBreakdown,
     medianResponse: median(respondedTouch.map(r => r.resp.minutes)), wonValue: sum(won, r => r.o.value), bdm
   };
 }

@@ -215,3 +215,16 @@ body.customizing .dragging { opacity: 0.45; }
 .tt-btn:hover { border-color: var(--accent); color: var(--accent); }
 .tt-x { font-weight: 600; }
 .tt-editable { outline: 1px dashed var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+/* ---------- funnel drop-off branches ---------- */
+.fn-branches { display: flex; flex-wrap: wrap; gap: 9px 16px; max-width: 1080px; margin: 10px auto 0; padding-top: 9px; border-top: 1px dashed var(--border); }
+.fn-branches-head { flex-basis: 100%; font-size: 11.5px; font-weight: 600; color: var(--muted); }
+.fn-branch { flex: 1 1 150px; min-width: 130px; max-width: 250px; }
+.fn-branch-label { display: block; font-size: 11px; color: var(--text-2); margin-bottom: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fn-branch-track { height: 22px; display: flex; align-items: center; }
+.fn-branch-bar { height: 22px; width: var(--w); min-width: 26px; border-radius: 4px; display: flex; align-items: center; padding-left: 7px; font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; transition: width .5s cubic-bezier(.22,.61,.36,1); }
+.fn-branch-bar.is-lost { background: #e5564e; color: #fff; }
+.fn-branch-bar.is-open { background: #f0b858; color: #3a2600; }
+.fn-branch-out { display: block; margin-top: 3px; }
+.fn-branch-out b { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.fn-branch-out span { font-size: 11px; color: var(--muted); margin-left: 4px; }
