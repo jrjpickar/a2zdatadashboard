@@ -754,8 +754,14 @@ export function workflowProgress(snap, { range, workflow = '', stage = '', now =
   const idx = buildIndex(snap), ws = snap.workflowStats || {};
   const all = Object.values(ws.progress || {});
   const names = new Map((snap.workflows || []).map(w => [w.id, w.name]));
-  const choices = [...new Set([...names.keys(), ...Object.keys(ws.daily || {}), ...all.map(r => r.wf)])]
-    .map(id => ({ id, name: names.get(id) || id })).sort((a, b) => a.name.localeCompare(b.name));
+  const cohort = all.filter(r => inRange(localDate(r.firstAt, idx.tz), range));
+  const rawCounts = new Map();
+  for (const run of cohort) rawCounts.set(run.wf, (rawCounts.get(run.wf) || 0) + 1);
+  const choices = [...new Set([...names.keys(), ...Object.keys(ws.daily || {}), ...Object.keys(ws.progressDaily || {}), ...all.map(r => r.wf)])]
+    .map(id => ({ id, name: names.get(id) || id,
+      progressRuns: ws.progress ? rawCounts.get(id) || 0 : sum(Object.entries(ws.progressDaily?.[id] || {}).filter(([day]) => inRange(day, range)), ([, n]) => n),
+      aggregateRuns: sum(Object.entries(ws.daily?.[id] || {}).filter(([day]) => inRange(day, range)), ([, d]) => d.runs) }))
+    .sort((a, b) => b.progressRuns - a.progressRuns || b.aggregateRuns - a.aggregateRuns || a.name.localeCompare(b.name));
   const selected = choices.some(w => w.id === workflow) ? workflow : choices[0]?.id || '';
   const runs = all.filter(r => r.wf === selected && inRange(localDate(r.firstAt, idx.tz), range));
   const steps = new Map();
@@ -776,7 +782,18 @@ export function workflowProgress(snap, { range, workflow = '', stage = '', now =
       status: step?.status || (r.finishedAt ? 'finished' : r.status || 'unknown'),
       age: Math.max(0, now - Date.parse(r.lastAt)) / 60000 };
   }).sort((a, b) => b.lastAt.localeCompare(a.lastAt) || a.run.localeCompare(b.run));
-  return { choices, selected, stage: chosenStage, stages, details, runs: runs.length,
+  const selectedChoice = choices.find(w => w.id === selected);
+  const totalHistory = ws.progress ? all.length : sum(Object.values(ws.progressDaily || {}), days => sum(Object.values(days)));
+  let emptyReason = '';
+  if (!runs.length) {
+    if (ws.state?.[selected]?.lastError) emptyReason = 'scan_error';
+    else if (ws.state?.[selected]?.pending) emptyReason = 'backfill_pending';
+    else if (!totalHistory) emptyReason = 'no_stage_history';
+    else if (selectedChoice?.aggregateRuns) emptyReason = 'aggregate_only';
+    else if (!ws.state?.[selected]?.checkedAt) emptyReason = 'not_scanned';
+    else emptyReason = 'no_runs';
+  }
+  return { aggregateRuns: selectedChoice?.aggregateRuns || 0, totalHistory, emptyReason, choices, selected, stage: chosenStage, stages, details, runs: runs.length,
     finished: runs.filter(r => r.finishedAt).length,
     since: ws.progressSince || '', retentionDays: ws.retentionDays || 90,
     pending: !!ws.state?.[selected]?.pending, error: ws.state?.[selected]?.lastError || '' };

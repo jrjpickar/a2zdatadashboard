@@ -165,3 +165,46 @@ test('progress endpoint bounds contact detail, validates dates, and requires a s
   const result = await handler(new Request('https://dashboard.test/api/workflow-progress?from=2026-10-01&to=2026-10-20'));
   assert.equal(result.status, 401);
 });
+
+test('default workflow prefers collected history; summary and detail choices agree', () => {
+  const d = emptyWorkflowData();
+  ingestRows(d, [row('live', 'R', '2026-10-19T14:00:00Z', 'success', { wf: 'Z' })], { now: progressNow });
+  d.daily.A = { '2026-10-19': { runs: 200 } };
+  const snap = { config: { timeZone: 'America/Los_Angeles' }, workflows: [
+    { id: 'A', name: 'Alphabetically first' }, { id: 'Z', name: 'Workflow with history' }],
+    workflowStats: publicWorkflowData(d) };
+  const summary = M.workflowProgress(snap, { range: progressRange });
+  assert.equal(summary.selected, 'Z');
+  assert.equal(summary.choices[0].progressRuns, 1);
+  const full = M.workflowProgress({ ...snap, workflowStats: publicWorkflowData(d, { includeProgress: true }) }, { range: progressRange });
+  assert.equal(full.selected, 'Z');
+  assert.deepEqual(full.choices, summary.choices);
+  const explicit = M.workflowProgress({ ...snap, workflowStats: publicWorkflowData(d, { includeProgress: true }) }, { range: progressRange, workflow: 'A' });
+  assert.equal(explicit.selected, 'A', 'explicit selection stays selected even when empty');
+  assert.equal(explicit.emptyReason, 'aggregate_only');
+  assert.equal(explicit.aggregateRuns, 200);
+});
+
+test('empty history distinguishes not collected, pending, scan error and scanned with no runs', () => {
+  const d = emptyWorkflowData();
+  const get = () => M.workflowProgress(progressSnap(d), { range: progressRange, workflow: 'W' });
+  assert.equal(get().emptyReason, 'no_stage_history');
+  d.state.W = { pending: { cursor: {} } };
+  assert.equal(get().emptyReason, 'backfill_pending');
+  d.state.W.lastError = 'GHL 401';
+  assert.equal(get().emptyReason, 'scan_error');
+  ingestRows(d, [row('other', 'R', '2026-10-19T14:00:00Z', 'success', { wf: 'OTHER' })], { now: progressNow });
+  d.state.W = {};
+  assert.equal(get().emptyReason, 'not_scanned');
+  d.state.W.checkedAt = new Date(progressNow).toISOString();
+  assert.equal(get().emptyReason, 'no_runs');
+});
+
+test('progress summary counts cohorts in the configured timezone without exposing contacts', () => {
+  const d = emptyWorkflowData();
+  ingestRows(d, [row('edge', 'R', '2026-10-20T06:59:00Z')], { now: progressNow });
+  const pacific = publicWorkflowData(d), utc = publicWorkflowData(d, { tz: 'UTC' });
+  assert.equal(pacific.progressDaily.W['2026-10-19'], 1);
+  assert.equal(utc.progressDaily.W['2026-10-20'], 1);
+  assert(!JSON.stringify(pacific.progressDaily).includes('Diego'));
+});

@@ -277,16 +277,24 @@ function workflowProgressHtml(o) {
   const loading = workflowProgressCache.loading;
   if (workflowProgressCache.data) { p = workflowProgressCache.data; state.workflowStage = p.stage; }
   const fetchError = workflowProgressCache.error ? `<div class="banner crit">Could not load stage history: ${esc(workflowProgressCache.error)} <button type="button" id="workflowProgressRetry" class="btn">Retry</button></div>` : '';
-  const select = `<div class="wf-select"><label for="workflowProgressSelect">Workflow</label><select id="workflowProgressSelect">${p.choices.map(w => `<option value="${esc(w.id)}"${w.id === p.selected ? ' selected' : ''}>${esc(w.name)}</option>`).join('')}</select></div>`;
+  const select = `<div class="wf-select"><label for="workflowProgressSelect">Workflow</label><select id="workflowProgressSelect">${p.choices.map(w => `<option value="${esc(w.id)}"${w.id === p.selected ? ' selected' : ''}>${esc(w.name)} — ${int(w.progressRuns)} tracked / ${int(w.aggregateRuns)} total</option>`).join('')}</select></div>`;
   const notice = `<p class="note">Runs first observed in the selected period; repeat enrollments count separately. History retains ${p.retentionDays} days of activity, with an initial 30-day backfill. Earlier enrollment dates and unobserved steps are unknown. Rep filter does not apply.</p>`;
   const coverage = p.pending ? '<div class="banner">Stage history is catching up. Counts are partial.</div>' : '';
   const error = p.error ? `<div class="banner crit">Latest scan failed: ${esc(p.error)}. Progress may be incomplete.</div>` : '';
   const button = (id, name, count, share) => `<button type="button" class="wf-stage${p.stage === id ? ' selected' : ''}" data-wf-stage="${esc(id)}" aria-pressed="${p.stage === id}"><span>${esc(name)}</span><span class="wf-track"><span style="width:${(100 * (share || 0)).toFixed(1)}%"></span></span><b>${int(count)}</b><span>${pct(share)}</span></button>`;
+  const emptyMessages = {
+    no_stage_history: 'Stage history has not been collected yet. The totals above are existing aggregate stats. Reload all GHL tabs so they load the updated feed, keep GHL open in the configured location, and allow the next eligible feed scan to replay the last 30 days.',
+    backfill_pending: 'This workflow’s stage history is still being collected. Leave GHL open; the scan resumes automatically.',
+    aggregate_only: 'This workflow has aggregate runs in this period, but no matching per-run stage history. Only the last 30 days can be replayed initially; older totals cannot be reconstructed from aggregates. Reload GHL to ensure the updated feed is running.',
+    not_scanned: 'No completed scan is recorded for this workflow yet. Leave GHL open in the configured location. The feed scans published workflows.',
+    scan_error: 'Stage history is unavailable because the latest workflow scan failed. See the scan error above.',
+    no_runs: 'No runs were observed for this workflow in the selected period. Choose another workflow or period.'
+  };
   const bars = loading ? '<div class="empty" role="status">Loading stage history…</div>' : workflowProgressCache.error ? '' : p.runs ? `<div class="wf-funnel">${button('', 'Runs observed', p.runs, 1)}${p.stages.map(st => button(st.id, st.name, st.count, st.share)).join('')}</div>
     <p class="note">Steps are ordered by typical time from first observation. Branches can widen the funnel. Reached includes successful, skipped and failed attempts; it does not imply success.</p>
     <p><b>${int(p.finished)}</b> finished · <b>${int(p.runs - p.finished)}</b> without an observed completion</p>
     ${table([{ label: 'Step', get: r => r.name }, { label: 'Succeeded', num: true, get: r => int(r.successful) }, { label: 'Had failure', num: true, get: r => int(r.failed) }, { label: 'Had skip', num: true, get: r => int(r.skipped) }, { label: 'Typical time to reach', get: r => mins(r.elapsed) }], p.stages, { scroll: true })}`
-    : `<div class="empty">${p.since ? 'No run history observed for this workflow in the selected period.' : 'Stage history will appear after the updated GHL feed runs. Reload GHL after deploying.'}</div>`;
+    : `<div class="empty">${esc(emptyMessages[p.emptyReason] || 'No stage history is available for this selection.')}</div>`;
   const details = table([
     { label: 'Contact', html: r => link(r.link, r.contactName || r.contactId || 'Unknown contact') },
     { label: 'Run', get: r => r.run }, { label: 'First observed', get: r => when(r.firstAt) },
@@ -294,7 +302,7 @@ function workflowProgressHtml(o) {
     { label: p.stage ? 'Step status' : 'Last recorded status', get: r => r.status }, { label: 'Latest run activity', get: r => when(r.lastAt) },
     { label: 'Since activity', get: r => mins(r.age) }
   ], p.details.slice(0, 200), { scroll: true, empty: 'No runs for this selection.' });
-  return card(12, 'Workflow stage funnel', 'Select a workflow, then click a stage to see its runs.', select + notice + coverage + error + fetchError + bars +
+  return card(12, 'Workflow stage funnel', 'Select a workflow, then click a stage to see its runs.', select + '<p class="note">Dropdown counts: tracked = runs with saved stage history; total = existing aggregate run count for the period. These can differ during backfill and because their dates are counted differently.</p>' + notice + coverage + error + fetchError + bars +
     `<h3>${p.stage ? 'Runs that reached the selected step' : 'Observed runs'}</h3>${details}`,
     `${(p.detailCount || p.details.length) > 200 ? 'Showing the 200 most recently active runs. Narrow the date range for more detail. ' : ''}Step results can overlap when a run retries. Steps without an action ID are grouped by name and type.`);
 }

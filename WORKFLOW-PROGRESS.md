@@ -34,3 +34,7 @@ Nothing has been deployed from this local copy. Local preview and tests use made
 Run `npm install`, `npm test` and `npm run build` with Node 22 or later. `npm run sandbox` serves the dashboard locally with sample workflow stage histories. Added tests cover reverse-order events, retries and deduplication, repeat enrollments, branches, duplicate step names, Pacific cohort dates, one-time migration, retention, bounded authenticated reads, sequential browser batches and rejected-ingest recovery.
 
 Verified locally: all 45 tests passed, build syntax checks passed, and the funnel, stage drilldown and empty workflow state were inspected in the browser using sample data. Live GHL validation and deployment remain outstanding.
+
+## Follow-up: clearer collection status (1.11.1)
+
+The selector now prefers workflows with tracked runs and shows tracked versus aggregate counts for the period. Empty states distinguish no collected history, a pending backfill, scan errors, workflows not scanned yet, and aggregate-only history. A compact per-day progress summary supports selection without downloading contact history. All 48 tests passed, and the updated selector was checked locally. The deployed original funnel was also checked after sign-in and showed saved stage history for the workflow reported as empty earlier. These follow-up changes have not been deployed.

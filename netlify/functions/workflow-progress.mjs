@@ -12,7 +12,7 @@ export function progressResponse(snapshot, data, params, now = Date.now()) {
   const validDate = d => /^\d{4}-\d{2}-\d{2}$/.test(d) && Number.isFinite(Date.parse(d)) && new Date(d).toISOString().slice(0, 10) === d;
   if (!validDate(from) || !validDate(to) || from > to) throw new HttpError('A valid date range is required');
   const p = workflowProgress({ config: snapshot?.config || {}, workflows: snapshot?.workflows || [],
-    workflowStats: publicWorkflowData(data, { includeProgress: true }) },
+    workflowStats: publicWorkflowData(data, { includeProgress: true, tz: snapshot?.config?.timeZone }) },
     { range: { from, to }, workflow: params.get('workflow') || '', stage: params.get('stage') || '', now });
   return { ...p, detailCount: p.details.length, details: p.details.slice(0, 200) };
 }

@@ -18,7 +18,7 @@ export default async function handler(request) {
     const session = await requireSession(request, cfg);
     const store = kpiStore();
     const [snapshot, status, wf] = await Promise.all([store.get(KEYS.snapshot, { type: 'json' }), store.get(KEYS.status, { type: 'json' }), store.get(KEYS.workflows, { type: 'json' })]);
-    if (snapshot) snapshot.workflowStats = publicWorkflowData(wf);
+    if (snapshot) snapshot.workflowStats = publicWorkflowData(wf, { tz: snapshot.config?.timeZone });
     const etag = `"${(snapshot?.builtAt || 'none')}-${wf?.updatedAt || ''}-${session.role}"`;
     if (request.headers.get('if-none-match') === etag) return new Response(null, { status: 304, headers: { etag } });
     const body = JSON.stringify({ etag, viewer: { name: session.name, email: session.email, owner: session.owner, role: session.role }, snapshot: forViewer(snapshot, session.owner), status });
