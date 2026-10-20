@@ -228,3 +228,15 @@ body.customizing .dragging { opacity: 0.45; }
 .fn-branch-out { display: block; margin-top: 3px; }
 .fn-branch-out b { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .fn-branch-out span { font-size: 11px; color: var(--muted); margin-left: 4px; }
+
+/* Stage reach uses independent bars because automation paths can branch. */
+.wf-select { display: flex; align-items: center; gap: 12px; font-weight: 600; flex-wrap: wrap; }
+.wf-select select { max-width: 100%; padding: 8px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+.wf-funnel { display: grid; gap: 6px; margin: 18px 0; }
+.wf-stage { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(80px, 2fr) 52px 48px; gap: 12px; align-items: center; width: 100%; text-align: left; padding: 10px; background: transparent; border: 1px solid transparent; border-radius: 8px; cursor: pointer; }
+.wf-stage.selected, .wf-stage:hover { background: var(--info-bg); border-color: var(--border); }
+.wf-stage:focus-visible { outline: 2px solid var(--s1); outline-offset: 2px; }
+.wf-stage > span:first-child { overflow-wrap: anywhere; }
+.wf-track { display: flex; justify-content: center; height: 30px; background: var(--grid); border-radius: 4px; overflow: hidden; }
+.wf-track > span { display: block; background: linear-gradient(90deg, var(--brand-300), var(--s1)); border-radius: 4px; }
+@media (max-width: 600px) { .wf-stage { grid-template-columns: minmax(90px, 1fr) minmax(40px, 1fr) 32px 38px; gap: 6px; padding: 6px; font-size: 12px; } }

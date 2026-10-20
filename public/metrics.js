@@ -747,3 +747,37 @@ export function dataQuality(snap, { now }) {
     lostStages: (snap.config?.lostStageIds || []).map(id => ({ id, name: snap.config.stages[id]?.name, pipeline: idx.serviceName(snap.config.stages[id]?.pipelineId) }))
   };
 }
+
+// Cohort uses the earliest log we have observed, not an inferred enrollment date.
+// Different branches are independent reaches; a later step never implies earlier success.
+export function workflowProgress(snap, { range, workflow = '', stage = '', now = Date.now() }) {
+  const idx = buildIndex(snap), ws = snap.workflowStats || {};
+  const all = Object.values(ws.progress || {});
+  const names = new Map((snap.workflows || []).map(w => [w.id, w.name]));
+  const choices = [...new Set([...names.keys(), ...Object.keys(ws.daily || {}), ...all.map(r => r.wf)])]
+    .map(id => ({ id, name: names.get(id) || id })).sort((a, b) => a.name.localeCompare(b.name));
+  const selected = choices.some(w => w.id === workflow) ? workflow : choices[0]?.id || '';
+  const runs = all.filter(r => r.wf === selected && inRange(localDate(r.firstAt, idx.tz), range));
+  const steps = new Map();
+  for (const run of runs) for (const st of Object.values(run.steps)) {
+    if (!steps.has(st.id)) steps.set(st.id, { id: st.id, name: st.name, identified: st.identified,
+      count: 0, successful: 0, failed: 0, skipped: 0, elapsed: [] });
+    const s = steps.get(st.id);
+    s.count++; s.successful += Number(st.successful); s.failed += Number(st.failed); s.skipped += Number(st.skipped);
+    s.elapsed.push(Math.max(0, Date.parse(st.firstAt) - Date.parse(run.firstAt)) / 60000);
+  }
+  const stages = [...steps.values()].map(s => ({ ...s, elapsed: median(s.elapsed), share: runs.length ? s.count / runs.length : null }))
+    .sort((a, b) => a.elapsed - b.elapsed || b.count - a.count || a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
+  const chosenStage = stages.some(s => s.id === stage) ? stage : '';
+  const details = runs.filter(r => !chosenStage || r.steps[chosenStage]).map(r => {
+    const step = chosenStage ? r.steps[chosenStage] : null;
+    return { run: r.run, contactId: r.contactId, contactName: r.contactName, link: idx.contactLink(r.contactId),
+      firstAt: r.firstAt, lastAt: r.lastAt, step: step?.name || r.step || '—',
+      status: step?.status || (r.finishedAt ? 'finished' : r.status || 'unknown'),
+      age: Math.max(0, now - Date.parse(r.lastAt)) / 60000 };
+  }).sort((a, b) => b.lastAt.localeCompare(a.lastAt) || a.run.localeCompare(b.run));
+  return { choices, selected, stage: chosenStage, stages, details, runs: runs.length,
+    finished: runs.filter(r => r.finishedAt).length,
+    since: ws.progressSince || '', retentionDays: ws.retentionDays || 90,
+    pending: !!ws.state?.[selected]?.pending, error: ws.state?.[selected]?.lastError || '' };
+}

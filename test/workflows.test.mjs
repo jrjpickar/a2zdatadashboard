@@ -62,3 +62,106 @@ test('feed endpoint: key gate, lease gate, claim/ingest/done, and the Workflows 
   assert.equal(Math.round(w.triggerRate * 1000), 100);
   assert.equal(w.weeks.at(-1).enrollments, 236);
 });
+
+const progressNow = Date.parse('2026-10-20T20:00:00Z');
+const progressRange = { from: '2026-10-01', to: '2026-10-20' };
+const progressSnap = d => ({ config: { timeZone: 'America/Los_Angeles', pipelines: {} },
+  workflows: [{ id: 'W', name: 'Intake', status: 'published' }], workflowStats: publicWorkflowData(d, { includeProgress: true }) });
+
+test('progress merges reverse-order logs, retries and replays; repeat enrollments stay separate', () => {
+  const d = emptyWorkflowData();
+  const rows = [
+    row('end', 'R1', '2026-10-19T15:00:00Z', 'finished', { end: true, step: '', contactId: '', contactName: '' }),
+    row('ok', 'R1', '2026-10-19T14:10:00Z', 'success', { stepId: 'sms' }),
+    row('fail', 'R1', '2026-10-19T14:00:00Z', 'failed', { stepId: 'sms' }),
+    row('again', 'R2', '2026-10-20T14:00:00Z', 'success', { stepId: 'sms' })
+  ];
+  ingestRows(d, rows, { now: progressNow });
+  const saved = JSON.stringify(d.progress);
+  assert.equal(ingestRows(d, rows, { now: progressNow }), 0);
+  assert.equal(JSON.stringify(d.progress), saved);
+  const p = M.workflowProgress(progressSnap(d), { range: progressRange, workflow: 'W', now: progressNow });
+  assert.equal(p.runs, 2);
+  assert.equal(p.finished, 1);
+  assert.equal(p.stages.length, 1);
+  assert.deepEqual([p.stages[0].count, p.stages[0].successful, p.stages[0].failed], [2, 2, 1]);
+  const run = p.details.find(r => r.run === 'R1');
+  assert.equal(run.firstAt, '2026-10-19T14:00:00.000Z');
+  assert.equal(run.status, 'finished');
+  assert.equal(run.contactName, 'Diego');
+});
+
+test('progress does not invent intermediate steps across branches; duplicate labels use action IDs', () => {
+  const d = emptyWorkflowData();
+  ingestRows(d, [
+    row('a', 'R1', '2026-10-19T14:00:00Z', 'success', { stepId: 'A', step: 'Message' }),
+    row('b', 'R2', '2026-10-19T14:00:00Z', 'skipped', { stepId: 'B', step: 'Message' }),
+    row('c', 'R3', '2026-10-19T14:00:00Z', 'success', { stepId: 'B', step: 'Message' }),
+    row('missing-run', '', '2026-10-19T14:00:00Z', 'success')
+  ], { now: progressNow });
+  const p = M.workflowProgress(progressSnap(d), { range: progressRange, workflow: 'W' });
+  assert.equal(p.runs, 3);
+  assert.equal(p.stages.length, 2);
+  assert.deepEqual(p.stages.map(s => s.count).sort(), [1, 2]);
+  const b = p.stages.find(s => s.id === '["id","B"]');
+  assert.deepEqual([b.successful, b.skipped], [1, 1]);
+  const drill = M.workflowProgress(progressSnap(d), { range: progressRange, workflow: 'W', stage: b.id });
+  assert.equal(drill.details.length, 2);
+  assert(!drill.details.some(r => r.run === 'R1'));
+});
+
+test('stage cohort uses first observed date in Pacific time even when completion is later', () => {
+  const d = emptyWorkflowData();
+  ingestRows(d, [row('end', 'R', '2026-10-20T17:00:00Z', 'finished', { end: true }),
+    row('start', 'R', '2026-10-20T06:59:00Z')], { now: progressNow });
+  const snap = progressSnap(d);
+  assert.equal(M.workflowProgress(snap, { range: { from: '2026-10-19', to: '2026-10-19' }, workflow: 'W' }).finished, 1);
+  assert.equal(M.workflowProgress(snap, { range: { from: '2026-10-20', to: '2026-10-20' }, workflow: 'W' }).runs, 0);
+});
+
+test('migration replays once, preserving daily totals and reconstructing progress from already-seen logs', async () => {
+  const store = useMemoryStore(new Map()), env = { WORKFLOW_FEED_KEY: 'secret' };
+  const d = emptyWorkflowData();
+  const r = row('seen', 'R', '2026-10-19T14:00:00Z');
+  ingestRows(d, [r], { now: progressNow });
+  const totals = JSON.stringify(d.daily);
+  d.version = 1; delete d.progress;
+  d.state.W = { newest: '2026-10-20T19:00:00Z' };
+  await store.setJSON(KEYS.workflows, d);
+  await store.setJSON(KEYS.snapshot, { workflows: [{ id: 'W', status: 'published' }] });
+  const args = { store, env, now: progressNow };
+  const [, claim] = await handleFeed({ key: 'secret', who: 'A', action: 'claim' }, args);
+  assert.equal(claim.workflows[0].newest, '');
+  await handleFeed({ key: 'secret', who: 'A', action: 'ingest', wf: 'W', rows: [r], state: { newest: '2026-10-20T20:00:00Z' } }, args);
+  const upgraded = await store.get(KEYS.workflows, { type: 'json' });
+  assert.equal(upgraded.version, 2);
+  assert.equal(JSON.stringify(upgraded.daily), totals);
+  assert.equal(Object.keys(upgraded.progress).length, 1);
+  const [, again] = await handleFeed({ key: 'secret', who: 'A', action: 'claim' }, args);
+  assert.equal(again.workflows[0].newest, '2026-10-20T20:00:00.000Z');
+});
+
+test('progress retention prunes inactive runs; same run ID in another workflow stays independent', () => {
+  const d = emptyWorkflowData();
+  const old = Date.parse('2026-06-01T12:00:00Z');
+  ingestRows(d, [row('old', 'old', new Date(old).toISOString())], { now: old });
+  ingestRows(d, [row('new1', 'same', '2026-10-19T14:00:00Z'), row('new2', 'same', '2026-10-19T14:00:00Z', 'success', { wf: 'OTHER' })], { now: progressNow });
+  assert.equal(Object.keys(d.progress).length, 2);
+  assert(Object.values(d.progress).every(r => r.run === 'same'));
+  assert(!('progress' in publicWorkflowData(d)), 'normal dashboard payload excludes raw progress');
+});
+
+test('progress endpoint bounds contact detail, validates dates, and requires a session', async () => {
+  const { progressResponse, default: handler } = await import('../netlify/functions/workflow-progress.mjs');
+  const d = emptyWorkflowData();
+  ingestRows(d, Array.from({ length: 205 }, (_, n) => row('row' + n, 'run' + n, '2026-10-19T14:00:00Z')), { now: progressNow });
+  const params = new URLSearchParams({ workflow: 'W', from: progressRange.from, to: progressRange.to });
+  const response = progressResponse(progressSnap(d), d, params, progressNow);
+  assert.equal(response.runs, 205);
+  assert.equal(response.detailCount, 205);
+  assert.equal(response.details.length, 200);
+  params.set('from', '2026-02-30');
+  assert.throws(() => progressResponse(progressSnap(d), d, params), /valid date/);
+  const result = await handler(new Request('https://dashboard.test/api/workflow-progress?from=2026-10-01&to=2026-10-20'));
+  assert.equal(result.status, 401);
+});

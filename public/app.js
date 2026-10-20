@@ -4,7 +4,7 @@ import { barChart, barCell, attachTooltips, esc } from './charts.js';
 const $ = id => document.getElementById(id);
 const TOKEN_KEY = 'a2z-kpi-token';
 const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} }, del(k) { try { localStorage.removeItem(k); } catch {} } };
-const state = { overrides: {}, snap: null, viewer: null, status: null, etag: '', period: store.get('kpi-period') || 'mtd', rep: store.get('kpi-rep') || '', tab: store.get('kpi-tab') || 'overview', queueKind: 'all', refreshing: false, layout: { containers: {}, hidden: {}, labels: {}, spans: {} }, customize: false };
+const state = { overrides: {}, snap: null, viewer: null, status: null, etag: '', period: store.get('kpi-period') || 'mtd', rep: store.get('kpi-rep') || '', tab: store.get('kpi-tab') || 'overview', queueKind: 'all', workflow: '', workflowStage: '', refreshing: false, layout: { containers: {}, hidden: {}, labels: {}, spans: {} }, customize: false };
 
 // ---------- formatting ----------
 const nf0 = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
@@ -239,6 +239,7 @@ function renderWorkflows() {
     ${kpi('Feed updated', w.lastIngestAt ? esc(ago(w.lastIngestAt)) : '—', w.pending ? `${int(w.pending)} workflows still catching up` : 'From the GHL Custom JS feed')}
   </div>
   <div class="grid">
+    ${workflowProgressHtml(o)}
     ${card(12, 'Workflows', 'Runs this period, biggest first. Finished = reached the end of the workflow.', table([
       { label: 'Workflow', get: r => r.name }, { label: 'Status', html: r => pill(r.status === 'published' ? 'Published' : r.status, r.status === 'published' ? 'good' : '') },
       { label: 'Runs', html: r => barCell(r.runs, maxRuns, int(r.runs)) }, { label: 'Finished', num: true, get: r => pct(r.finishRate) },
@@ -254,6 +255,57 @@ function renderWorkflows() {
     ${card(6, 'Published but no runs', 'In this period. Maybe retired, maybe a broken trigger.', table([{ label: 'Workflow', get: r => r.name }, { label: 'Last run', get: r => r.lastRun ? shortDate(r.lastRun) : 'Not seen since the feed started' }], w.quiet, { scroll: true, empty: 'Every published workflow ran.' }))}
   </div>`;
 }
+
+let workflowProgressCache = null;
+function workflowProgressHtml(o) {
+  let p = M.workflowProgress(state.snap, { ...o, workflow: state.workflow, stage: state.workflowStage });
+  state.workflow = p.selected;
+  const query = new URLSearchParams({ workflow: p.selected, stage: state.workflowStage, from: o.range.from, to: o.range.to });
+  const key = query.toString() + '|' + (state.snap.workflowStats?.lastIngestAt || '') + '|' + state.snap.builtAt;
+  if (workflowProgressCache?.key !== key) {
+    const entry = workflowProgressCache = { key, loading: true };
+    api('/api/workflow-progress?' + query.toString()).then(data => {
+      if (workflowProgressCache !== entry) return;
+      entry.data = data; entry.loading = false;
+      if (state.tab === 'workflows') render();
+    }).catch(error => {
+      if (workflowProgressCache !== entry) return;
+      entry.error = error.message; entry.loading = false;
+      if (state.tab === 'workflows') render();
+    });
+  }
+  const loading = workflowProgressCache.loading;
+  if (workflowProgressCache.data) { p = workflowProgressCache.data; state.workflowStage = p.stage; }
+  const fetchError = workflowProgressCache.error ? `<div class="banner crit">Could not load stage history: ${esc(workflowProgressCache.error)} <button type="button" id="workflowProgressRetry" class="btn">Retry</button></div>` : '';
+  const select = `<div class="wf-select"><label for="workflowProgressSelect">Workflow</label><select id="workflowProgressSelect">${p.choices.map(w => `<option value="${esc(w.id)}"${w.id === p.selected ? ' selected' : ''}>${esc(w.name)}</option>`).join('')}</select></div>`;
+  const notice = `<p class="note">Runs first observed in the selected period; repeat enrollments count separately. History retains ${p.retentionDays} days of activity, with an initial 30-day backfill. Earlier enrollment dates and unobserved steps are unknown. Rep filter does not apply.</p>`;
+  const coverage = p.pending ? '<div class="banner">Stage history is catching up. Counts are partial.</div>' : '';
+  const error = p.error ? `<div class="banner crit">Latest scan failed: ${esc(p.error)}. Progress may be incomplete.</div>` : '';
+  const button = (id, name, count, share) => `<button type="button" class="wf-stage${p.stage === id ? ' selected' : ''}" data-wf-stage="${esc(id)}" aria-pressed="${p.stage === id}"><span>${esc(name)}</span><span class="wf-track"><span style="width:${(100 * (share || 0)).toFixed(1)}%"></span></span><b>${int(count)}</b><span>${pct(share)}</span></button>`;
+  const bars = loading ? '<div class="empty" role="status">Loading stage history…</div>' : workflowProgressCache.error ? '' : p.runs ? `<div class="wf-funnel">${button('', 'Runs observed', p.runs, 1)}${p.stages.map(st => button(st.id, st.name, st.count, st.share)).join('')}</div>
+    <p class="note">Steps are ordered by typical time from first observation. Branches can widen the funnel. Reached includes successful, skipped and failed attempts; it does not imply success.</p>
+    <p><b>${int(p.finished)}</b> finished · <b>${int(p.runs - p.finished)}</b> without an observed completion</p>
+    ${table([{ label: 'Step', get: r => r.name }, { label: 'Succeeded', num: true, get: r => int(r.successful) }, { label: 'Had failure', num: true, get: r => int(r.failed) }, { label: 'Had skip', num: true, get: r => int(r.skipped) }, { label: 'Typical time to reach', get: r => mins(r.elapsed) }], p.stages, { scroll: true })}`
+    : `<div class="empty">${p.since ? 'No run history observed for this workflow in the selected period.' : 'Stage history will appear after the updated GHL feed runs. Reload GHL after deploying.'}</div>`;
+  const details = table([
+    { label: 'Contact', html: r => link(r.link, r.contactName || r.contactId || 'Unknown contact') },
+    { label: 'Run', get: r => r.run }, { label: 'First observed', get: r => when(r.firstAt) },
+    { label: p.stage ? 'Selected step' : 'Latest observed step', get: r => r.step },
+    { label: p.stage ? 'Step status' : 'Last recorded status', get: r => r.status }, { label: 'Latest run activity', get: r => when(r.lastAt) },
+    { label: 'Since activity', get: r => mins(r.age) }
+  ], p.details.slice(0, 200), { scroll: true, empty: 'No runs for this selection.' });
+  return card(12, 'Workflow stage funnel', 'Select a workflow, then click a stage to see its runs.', select + notice + coverage + error + fetchError + bars +
+    `<h3>${p.stage ? 'Runs that reached the selected step' : 'Observed runs'}</h3>${details}`,
+    `${(p.detailCount || p.details.length) > 200 ? 'Showing the 200 most recently active runs. Narrow the date range for more detail. ' : ''}Step results can overlap when a run retries. Steps without an action ID are grouped by name and type.`);
+}
+document.addEventListener('change', e => {
+  if (e.target.id === 'workflowProgressSelect') { state.workflow = e.target.value; state.workflowStage = ''; render(); }
+});
+document.addEventListener('click', e => {
+  if (e.target.closest('#workflowProgressRetry')) { workflowProgressCache = null; render(); return; }
+  const b = e.target.closest('button[data-wf-stage]');
+  if (b) { state.workflowStage = b.dataset.wfStage; render(); }
+});
 
 function renderMoney() {
   const o = opts(), m = M.moneySection(state.snap, o);

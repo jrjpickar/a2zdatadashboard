@@ -56,3 +56,8 @@
   [headers.values]
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "same-origin"
+
+[[redirects]]
+  from = "/api/workflow-progress"
+  to = "/.netlify/functions/workflow-progress"
+  status = 200

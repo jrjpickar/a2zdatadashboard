@@ -4,6 +4,8 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
 import { sampleSnapshot } from './sample.mjs';
+import { progressResponse } from '../netlify/functions/workflow-progress.mjs';
+import { publicWorkflowData } from '../lib/workflows.mjs';
 import { cleanSettings } from '../lib/config.mjs';
 
 const root = new URL('../public/', import.meta.url).pathname;
@@ -18,7 +20,11 @@ const send = (res, status, body) => { res.writeHead(status, { 'content-type': 'a
 createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/api/session') return send(res, 200, { token: 'sandbox', user: { name: 'Sandbox', email: 'sandbox@example.com' }, owner });
-  if (url.pathname === '/api/dashboard-data') return send(res, 200, { viewer: { name: 'Sandbox (sample data)', email: 'sandbox@example.com', owner, role }, snapshot: owner ? snapshot : { ...snapshot, ledger: null }, status: { lastRunAt: snapshot.builtAt } });
+  if (url.pathname === '/api/workflow-progress') {
+    try { return send(res, 200, progressResponse(snapshot, snapshot.workflowStats, url.searchParams)); }
+    catch (e) { return send(res, e.status || 500, { error: e.message }); }
+  }
+  if (url.pathname === '/api/dashboard-data') return send(res, 200, { viewer: { name: 'Sandbox (sample data)', email: 'sandbox@example.com', owner, role }, snapshot: { ...snapshot, workflowStats: publicWorkflowData(snapshot.workflowStats), ...(!owner ? { ledger: null } : {}) }, status: { lastRunAt: snapshot.builtAt } });
   if (url.pathname === '/api/queue') {
     if (req.method === 'POST') { let body = ''; for await (const c of req) body += c; const { applyQueueChange } = await import('../netlify/functions/queue.mjs'); try { overrides = applyQueueChange(overrides, JSON.parse(body), { name: 'Sandbox' }); } catch (e) { return send(res, e.status || 400, { error: e.message }); } }
     return send(res, 200, overrides);

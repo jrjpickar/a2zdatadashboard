@@ -1,6 +1,7 @@
 // Sample snapshot for the local sandbox and the tests. Every name and number here is made up.
 // Stage names mirror A2Z's real pipelines so the sandbox exercises the live stage-name config.
 import { config } from '../lib/config.mjs';
+import { emptyWorkflowData, ingestRows } from '../lib/workflows.mjs';
 import { normName } from '../lib/normalize.mjs';
 const DAY = 86400000;
 function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
@@ -197,7 +198,27 @@ export function sampleSnapshot(now = Date.now(), seed = 7) {
   wfIssues.sort((a, b) => (a.at < b.at ? 1 : -1));
   const weeklyHistory = {};
   for (let w = 11; w >= 0; w--) { const mon = day(now - (w * 7 + ((new Date(now).getUTCDay() + 6) % 7)) * DAY); weeklyHistory[mon] = Math.round(150 + r() * 450); }
+  // Exercise re-enrollments, branches, skips, failures and runs with no observed exit.
+  const progressData = emptyWorkflowData(), progressRows = [];
+  for (const [wf, , , dailyRuns] of wfDefs) {
+    if (!dailyRuns) continue;
+    for (let n = 0; n < 84; n++) {
+      const contact = contacts[n % contacts.length], run = `${wf}-run-${n}`;
+      const start = now - Math.floor(n / 4) * DAY - (2 + n % 4) * 3600000;
+      const names = ['Enrollment', 'Send welcome message', n % 2 ? 'Email follow-up' : 'SMS follow-up', 'Wait for response', 'Notify assigned rep'];
+      const depth = n % 6;
+      for (let step = 0; step <= Math.min(depth, 4); step++) {
+        progressRows.push({ id: `${run}-${step}`, wf, run, at: iso(start + step * 60000),
+          stepId: `${wf}-${step === 2 ? 'branch-' + n % 2 : step}`, step: names[step], type: step === 3 ? 'wait' : 'action',
+          status: step === depth && n % 7 === 0 ? 'failed' : step === depth && n % 11 === 0 ? 'skipped' : 'success',
+          contactId: contact.id, contactName: contact.name });
+      }
+      if (depth === 5) progressRows.push({ id: `${run}-end`, wf, run, at: iso(start + 5 * 60000), status: 'finished', type: 'end_of_workflow', end: true, contactId: contact.id, contactName: contact.name });
+    }
+  }
+  ingestRows(progressData, progressRows, { now });
   const workflowStats = {
+    progress: progressData.progress, progressSince: iso(now - 21 * DAY), retentionDays: 90,
     daily: wfDaily, issues: wfIssues.slice(0, 200), state: wfState, lastIngestAt: iso(now - 12 * 60000), lastRunBy: 'tab-sample',
     overview: { at: iso(now - 12 * 60000), totalWorkflows: 71, publishedWorkflows: 49, totalEnrollments: 5609, trigger: { total: 14486, matched: 1450, days: 30 }, weeklyHistory }
   };

@@ -7,7 +7,7 @@
 // Write-only: the key lets a browser add workflow stats, never read dashboard data.
 import { kpiStore, KEYS } from '../../lib/store.mjs';
 import { equal } from '../../lib/auth.mjs';
-import { emptyWorkflowData, ingestRows, applyState, claimLease, applyOverview } from '../../lib/workflows.mjs';
+import { emptyWorkflowData, prepareWorkflowProgress, ingestRows, applyState, claimLease, applyOverview } from '../../lib/workflows.mjs';
 
 const ORIGIN_OK = o => /^https:\/\/([a-z0-9-]+\.)*(gohighlevel\.com|leadconnectorhq\.com|msgsndr\.com)$/i.test(o) || String(process.env.FEED_ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean).includes(o);
 function reply(request, body, status = 200) {
@@ -22,6 +22,7 @@ export async function handleFeed(body, { store = kpiStore(), now = Date.now(), e
   const who = String(body.who || 'browser').slice(0, 80);
   if (body.action === 'claim') {
     if (!claimLease(data, who, now, Number(env.WORKFLOW_FEED_MINUTES) || 25)) return [200, { go: false }];
+    prepareWorkflowProgress(data);
     const snap = await store.get(KEYS.snapshot, { type: 'json' });
     const list = (snap?.workflows || []).filter(w => w.status === 'published');
     data.lastRunBy = who;
@@ -30,7 +31,8 @@ export async function handleFeed(body, { store = kpiStore(), now = Date.now(), e
   }
   if (!data.lease || data.lease.who !== who) return [409, { error: 'not the lease holder' }];
   if (body.action === 'ingest') {
-    const rows = Array.isArray(body.rows) ? body.rows.slice(0, 5000) : [];
+    if (Array.isArray(body.rows) && body.rows.length > 5000) return [400, { error: 'batch exceeds 5000 rows' }];
+    const rows = Array.isArray(body.rows) ? body.rows.filter(r => r && r.wf === String(body.wf || '')) : [];
     const added = ingestRows(data, rows, { now });
     applyState(data, String(body.wf || ''), body.state);
     data.lastIngestAt = new Date(now).toISOString();

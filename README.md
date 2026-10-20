@@ -19,3 +19,5 @@ Nothing is written to GHL, Twilio, the dispatch board or the Ledger.
 - `npm test` runs the metric and sync tests. `npm run build` syntax-checks everything.
 - Deploy steps and every environment variable: **DEPLOY.md**.
 - How each number is counted is on the Data Quality tab.
+
+Workflow stage funnels and rollout details: **WORKFLOW-PROGRESS.md**. The Workflows tab now tracks observed steps per enrollment and loads stage/contact detail on demand.

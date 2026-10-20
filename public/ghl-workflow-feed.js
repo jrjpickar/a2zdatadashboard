@@ -81,7 +81,7 @@
   }
   function feed(body) {
     body.key = CFG.key; body.who = who;
-    return nativeFetch(CFG.endpoint, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: JSON.stringify(body) }).then(function (r) { return r.json(); });
+    return nativeFetch(CFG.endpoint, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: JSON.stringify(body) }).then(function (r) { if (!r.ok) throw new Error('Workflow feed ' + r.status); return r.json(); });
   }
   function reasonOf(r) {
     var m = r.meta || {}, d = m.data || (m.actionFrom && m.actionFrom.response) || null;
@@ -94,7 +94,7 @@
   function slim(r) {
     var m = r.meta || {};
     return {
-      id: r._id, wf: r.workflowId, run: r.workflowStatusId, at: r.createdAt, status: r.status, type: r.type, step: r.stepName,
+      id: r._id, wf: r.workflowId, run: r.workflowStatusId, at: r.createdAt, status: r.status, type: r.type, step: r.stepName, stepId: r.actionId || r.stepId || '',
       contactId: r.contactId || r.entityId || '', contactName: r.contactName || r.displayName || '',
       reason: (r.status === 'success' || r.status === 'finished') ? '' : reasonOf(r),
       end: !!(m.removedFrom && m.removedFrom.type === 'end_of_workflow') || r.type === 'end_of_workflow'
@@ -156,10 +156,18 @@
         chain = chain.then(function () {
           if (budget.left <= 0 || !headers) return;
           return scan(wf, budget).then(function (res) {
-            var sends = [], rows = res.rows;
-            if (!rows.length) sends.push(feed({ action: 'ingest', wf: wf.id, rows: [], state: res.state }));
-            for (var i = 0; i < rows.length; i += 2000) sends.push(feed({ action: 'ingest', wf: wf.id, rows: rows.slice(i, i + 2000), state: i + 2000 >= rows.length ? res.state : null }));
-            return Promise.all(sends);
+            var rows = res.rows, sends = Promise.resolve();
+            if (!rows.length) return feed({ action: 'ingest', wf: wf.id, rows: [], state: res.state });
+            // Each ingest rewrites one stored object. Commit sequentially and only
+            // advance the scan cursor after every preceding batch is acknowledged.
+            for (var i = 0; i < rows.length; i += 2000) {
+              (function (offset) {
+                sends = sends.then(function () {
+                  return feed({ action: 'ingest', wf: wf.id, rows: rows.slice(offset, offset + 2000), state: offset + 2000 >= rows.length ? res.state : null });
+                });
+              })(i);
+            }
+            return sends;
           });
         });
       });
