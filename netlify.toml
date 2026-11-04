@@ -3,6 +3,10 @@
   functions = "netlify/functions"
   command = "npm run build"
 
+[build.environment]
+  # Node.js 24 LTS (security support until April 2028). Matches .nvmrc.
+  NODE_VERSION = "24"
+
 [functions]
   node_bundler = "esbuild"
 
