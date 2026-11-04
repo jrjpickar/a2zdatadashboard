@@ -241,3 +241,37 @@ test('separate funnels: lead funnel per pipeline, hiring funnel applicants -> hi
   assert.equal(M.leadFunnel(snap, { ...o, pipeline: 'demo' }).stages[0].count, 1);
   assert.deepEqual(M.hiringFunnel(snap, o).stages.map(s => s.count), [2, 1, 1, 1]);
 });
+
+test('won revenue = Job Completed in period, pending = Accepted / Work In Progress now, all job pipelines, by user', () => {
+  const stages = {
+    Dc: { name: 'Job Completed', position: 8, pipelineId: 'D' }, Da: { name: 'Accepted', position: 6, pipelineId: 'D' }, Dw: { name: 'Work In Progress', position: 7, pipelineId: 'D' }, Dn: { name: 'New Lead', position: 0, pipelineId: 'D' },
+    Lc: { name: 'Job Completed', position: 5, pipelineId: 'L' }, La: { name: 'Accepted / In Progress', position: 4, pipelineId: 'L' },
+    Cc: { name: 'Job Completed', position: 6, pipelineId: 'C' }, Ca: { name: 'Accepted', position: 4, pipelineId: 'C' },
+    COc: { name: 'Completed', position: 5, pipelineId: 'CO' }, COw: { name: 'Work in Progress', position: 4, pipelineId: 'CO' },
+    Hx: { name: 'Accepted', position: 1, pipelineId: 'H' }
+  };
+  const o = (id, pipelineId, stageId, value, assignedTo, extra = {}) => ({ id, pipelineId, stageId, status: 'open', value, createdAt: '2026-09-01T16:00:00Z', stageChangedAt: '2026-10-05T16:00:00Z', contactId: 'c1', assignedTo, ...extra });
+  const snap = base({
+    config: { ...base().config, stages, jobCompletedStageIds: ['Dc', 'Lc', 'Cc', 'COc'] }, // no pendingStageIds: falls back to stage names
+    contacts: [{ id: 'c1', name: 'A', assignedTo: 'u2' }],
+    opportunities: [
+      o('w1', 'D', 'Dc', 1000, 'u1', { status: 'won' }), o('w2', 'L', 'Lc', 300, 'u2'), o('w3', 'CO', 'COc', 200, ''),
+      o('w4', 'C', 'Cc', 999, 'u1', { stageChangedAt: '2026-08-01T16:00:00Z' }), // out of period
+      o('w5', 'D', 'Dc', 777, 'u1', { status: 'lost' }),                           // lost in GHL
+      o('p1', 'D', 'Da', 5000, 'u1'), o('p2', 'D', 'Dw', 4000, 'u2', { stageChangedAt: '2025-01-01T16:00:00Z' }), o('p3', 'L', 'La', 600, 'u1'), o('p4', 'CO', 'COw', 100, 'u2'), o('p5', 'C', 'Ca', 50, 'u1'),
+      o('x1', 'H', 'Hx', 9999, 'u1'), o('x2', 'D', 'Dn', 8888, 'u1')
+    ]
+  });
+  const range = { from: '2026-10-01', to: '2026-10-12' };
+  const all = M.revenueSection(snap, { range, rep: '' });
+  assert.deepEqual([all.wonCount, all.wonValue], [3, 1500]);
+  assert.deepEqual([all.pendingCount, all.pendingValue], [5, 9750]);
+  const demo = all.byPipeline.find(x => x.key === 'Demo');
+  assert.deepEqual([demo.wonValue, demo.pendingValue, demo.pendingCount], [1000, 9000, 2]);
+  assert.equal(all.byPipeline.find(x => x.key === 'Change orders').pendingValue, 100);
+  const u1 = M.revenueSection(snap, { range, rep: 'u1' });
+  assert.deepEqual([u1.wonValue, u1.pendingValue], [1000, 5650]);
+  const u2 = M.revenueSection(snap, { range, rep: 'u2' });
+  assert.deepEqual([u2.wonValue, u2.pendingValue], [500, 4100]); // w3 unassigned falls back to the contact owner u2
+  assert.deepEqual(all.byUser.map(x => [x.key, x.wonValue, x.pendingValue]), [['u1', 1000, 5650], ['u2', 500, 4100]]);
+});

@@ -30,6 +30,7 @@ export function sampleSnapshot(now = Date.now(), seed = 7) {
   const proposalStageIds = matchIds(cfg.proposalStageNames);
   const jobCompletedStageIds = matchIds(cfg.jobCompletedStageNames);
   const lostStageIds = matchIds(cfg.lostStageNames);
+  const pendingStageIds = matchIds(cfg.pendingStageNames);
   const propNorm = new Set(cfg.proposalStageNames.map(normName)), jcNorm = new Set(cfg.jobCompletedStageNames.map(normName)), lostNorm = new Set(cfg.lostStageNames.map(normName));
   const proposalName = pid => stageDefs[pid].find(n => propNorm.has(normName(n)));
   const completedName = pid => stageDefs[pid].find(n => jcNorm.has(normName(n)));
@@ -227,7 +228,7 @@ export function sampleSnapshot(now = Date.now(), seed = 7) {
     settings: { containerFleet: { '10 Yard': 12, '40 Yard': 18 }, rentalDays: 7, followUpDays: 3, workdays: [1, 2, 3, 4, 5, 6], businessHours: { open: '07:00', close: '17:00' } },
     config: { timeZone: 'America/Los_Angeles', locationId: 'QUcu2PEAxPV1sQm1GQCq', ghlAppUrl: 'https://app.gohighlevel.com', pipelines: P,
       pipelineNames: { [P.demo]: 'Demo', [P.labor]: 'Labor', [P.containers]: 'Containers', [P.changeOrders]: 'Change Orders', [P.hiring]: 'Hiring' },
-      stages, proposalStageIds, jobCompletedStageIds, lostStageIds, customerTypes: ['general-contractor', 'developer', 'home-owner'], laborerTypes: ['laborer'], activeTemps: ['warm', 'hot', 'vip'], dormantTemps: ['cold'], contactTypeSource: 'GHL contact type' },
+      stages, proposalStageIds, jobCompletedStageIds, pendingStageIds, lostStageIds, customerTypes: ['general-contractor', 'developer', 'home-owner'], laborerTypes: ['laborer'], activeTemps: ['warm', 'hot', 'vip'], dormantTemps: ['cold'], contactTypeSource: 'GHL contact type' },
     users, opportunities, contacts, conversationState, stageEvents, hireEvents, messageTouches, callTouches, answeredInbound, inboundCalls, workflows, workflowStats,
     history: { stageTrackingSince: iso(now - 300 * DAY), hireTrackingSince: iso(now - 300 * DAY) },
     dispatch: { serverTime: iso(now), jobs, moves, moveRuns, jobDays, bookings, eodSheets, labor: crewPool.map(c => ({ id: c.id, name: c.name, phone: c.phone })), assets, temperatures: [], health: { makeRuns30d: [], pendingGhlScheduleSyncs: 0 } },

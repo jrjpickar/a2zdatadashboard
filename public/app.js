@@ -61,9 +61,36 @@ function opts() {
   return { range: M.periodRange(state.period, Date.now(), tz), rep: state.rep, now: Date.now() };
 }
 
+function revenuePipelineTable(r) {
+  const rows = r.byPipeline.filter(x => x.wonCount || x.pendingCount);
+  const tot = { key: 'Total', wonCount: r.wonCount, wonValue: r.wonValue, pendingCount: r.pendingCount, pendingValue: r.pendingValue, total: true };
+  const max = Math.max(0, ...rows.map(x => x.wonValue + x.pendingValue));
+  const stageTip = x => x.pendingStages?.length ? x.pendingStages.map(s => `${s.key}: ${int(s.count)} · ${money(s.value)}`).join(' / ') : '';
+  return table([
+    { label: 'Pipeline', html: x => x.total ? `<b>${esc(x.key)}</b>` : esc(x.key) },
+    { label: 'Won jobs', num: true, get: x => int(x.wonCount) },
+    { label: 'Won $', num: true, html: x => x.total ? `<b>${money(x.wonValue)}</b>` : money(x.wonValue) },
+    { label: 'Pending jobs', num: true, html: x => `<span title="${esc(stageTip(x))}">${int(x.pendingCount)}</span>` },
+    { label: 'Pending $', num: true, html: x => x.total ? `<b>${money(x.pendingValue)}</b>` : `<span title="${esc(stageTip(x))}">${money(x.pendingValue)}</span>` },
+    { label: 'Won + pending', html: x => x.total ? `<b>${money(x.wonValue + x.pendingValue)}</b>` : barCell(x.wonValue + x.pendingValue, max, money(x.wonValue + x.pendingValue)) }
+  ], rows.length ? [...rows, tot] : [], { empty: 'No won or pending jobs for this period.' });
+}
+function revenueUserTable(r) {
+  const max = Math.max(0, ...r.byUser.map(x => x.wonValue + x.pendingValue));
+  const name = x => x.key ? (userName(x.key) || 'Unknown user') : 'Unassigned';
+  return table([
+    { label: 'User', html: x => x.key ? `<button type="button" class="link-btn" data-rep="${esc(x.key)}" title="Filter the dashboard to this user">${x.key === state.rep ? `<b>${esc(name(x))}</b>` : esc(name(x))}</button>` : esc(name(x)) },
+    { label: 'Won $', num: true, get: x => money(x.wonValue) },
+    { label: 'Pending $', num: true, get: x => money(x.pendingValue) },
+    { label: 'Total', html: x => barCell(x.wonValue + x.pendingValue, max, money(x.wonValue + x.pendingValue)) }
+  ], r.byUser, { empty: 'No won or pending jobs for this period.' });
+}
+
 function renderOverview() {
   const o = opts(), ov = M.overview(state.snap, o), e = M.estimatesSection(state.snap, o), l = M.leadsSection(state.snap, o), q = M.actionQueue(state.snap, { ...o, overrides: state.overrides }), c = M.containersSection(state.snap, o);
+  const r = M.revenueSection(state.snap, o);
   const overdue = q.filter(i => i.overdue).length;
+  const who = state.rep ? esc(userName(state.rep)) : 'All users';
   return `<div class="kpis">
     ${kpi('Needs attention', int(q.length), overdue ? `${int(overdue)} overdue` : 'Action queue, now', q.length ? (overdue ? 'crit' : 'warn') : 'good')}
     ${kpi('New leads', int(ov.leads), `${int(l.response.awaiting)} still waiting for a reply`, l.response.awaiting ? 'warn' : '')}
@@ -74,7 +101,14 @@ function renderOverview() {
     ${kpi('Open pipeline', money(e.openValue), 'All open job opportunities')}
     ${kpi('Crew utilization', pct(ov.crewUtil), `${int(ov.crewBooked)} of ${int(ov.crewAvailable)} crew-days booked`)}
   </div>
+  <div class="kpis">
+    ${kpi('Won revenue', money(r.wonValue), `${int(r.wonCount)} jobs in Job Completed this period · ${who}`, 'good')}
+    ${kpi('Pending revenue', money(r.pendingValue), `${int(r.pendingCount)} jobs Accepted or Work In Progress now · ${who}`)}
+    ${kpi('Won + pending', money(r.wonValue + r.pendingValue), 'All pipelines incl. change orders')}
+  </div>
   <div class="grid">
+    ${card(7, 'Won and pending revenue by pipeline', 'Won = Job Completed (Change Orders: Completed) in this period. Pending = Accepted or Work In Progress right now. Hover pending for the stage split.', revenuePipelineTable(r), r.noPendingStage ? 'No Accepted / Work In Progress stage found. Set PENDING_STAGE_NAMES if the stages were renamed.' : '')}
+    ${card(5, 'Won and pending revenue by user', 'Opportunity owner (else the contact owner). Click a name to filter the dashboard to that user.', revenueUserTable(r))}
     ${card(7, 'Action queue', 'Needs attention now (not filtered by period)', queueList(q.slice(0, 8)), q.length > 8 ? `${q.length - 8} more on the Leads tab.` : '')}
     ${card(5, 'New leads by day', '', barChart(l.daily.slice(-45).map(d => ({ label: d.date, value: d.count })), { format: v => int(v), labelFormat: shortDate }))}
     ${card(6, 'Win rate by service', 'Jobs won or lost in this period', winTable(e.byService, 'Service'))}
@@ -105,6 +139,7 @@ async function queueAction(el, action, until) {
   catch (e) { alertBanner(e.message); }
 }
 document.addEventListener('click', e => { const b = e.target.closest('button[data-qact]'); if (b) queueAction(b, b.dataset.qact); });
+document.addEventListener('click', e => { const b = e.target.closest('button[data-rep]'); if (!b || state.customize) return; state.rep = b.dataset.rep === state.rep ? '' : b.dataset.rep; store.set('kpi-rep', state.rep); render(); });
 document.addEventListener('change', e => { const d = e.target.closest('input[data-qact="snooze"]'); if (d && d.value) queueAction(d, 'snooze', `${d.value}T15:00:00Z`); });
 async function loadOverrides() { try { state.overrides = await api('/api/queue'); } catch { state.overrides = state.overrides || {}; } }
 const userName = id => state.snap?.users?.find(u => u.id === id)?.name || '';
@@ -354,6 +389,7 @@ function renderQuality() {
     ['Estimate sent', 'The opportunity entered Proposal Sent (Change Order Sent for change orders). Stage history is recorded by this dashboard from ' + (dq.history.stageTrackingSince ? shortDate(dq.history.stageTrackingSince) : 'its first sync') + '; earlier proposals use GHL\'s last stage change.'],
     ['Sent within / turnaround', 'Opportunities created in the period: share whose proposal was sent within the business-day target (3 by default, Settings) of the opportunity being created. Still-open ones past the target count as misses; ones still inside it, or closed without a proposal, are left out. Turnaround = business hours from creation to Proposal Sent.'],
     ['Action queue edits', 'Admins can mark an item Done, Dismiss it or Snooze it to a date. The edit holds until GHL shows something new on that lead or caller (a call, text, email, stage or status change); then the item comes back if it still applies. A conversation opened (read) in GHL also takes its item out of the queue.'],
+    ['Won / pending revenue (Overview)', 'Won = Demo, Labor, Containers and Change Orders opportunities in a Job Completed stage (Change Orders: Completed), dated by when they entered it. Pending = opportunities sitting now in Accepted, Work In Progress or Accepted / In Progress (not filtered by period). Lost or abandoned in GHL are skipped. User = opportunity owner, else the contact owner.'],
     ['Jobs won / revenue booked', 'Opportunities marked Won, or sitting in a Job Completed stage, dated by GHL\'s status or stage change. Revenue = their value. Win rate = won ÷ (won + lost) decided in the period.'],
     ['Lost / dead deals', 'An opportunity marked Lost, or moved to a terminal "dead" stage (Declined, Priced Too Low, Ghosted, …), counts as lost even if GHL still shows it Open — and the stage name becomes the lost reason. Set LOST_STAGE_NAMES to match your stages. These drop out of open pipeline, the action queue and backlog.'],
     ['Containers out', 'Container drops minus pickups per customer from the dispatch board\'s runs (Reset day / Complete). Swaps and dump & returns keep the count. Quantity, not yards.'],
@@ -517,7 +553,7 @@ function render() {
   if (state.snap.sample) banners.push('<div class="banner"><b>Sample data.</b> Every name and number on this page is made up (local sandbox).</div>');
   const broken = Object.entries(state.snap.feeds || {}).filter(([k, f]) => !f.ok && !f.optional && FEED_LABELS[k]);
   if (broken.length) banners.push(`<div class="banner crit">${broken.map(([k]) => esc(FEED_LABELS[k])).join(', ')}: last pull failed or not set up. Numbers from ${broken.length > 1 ? 'those sources' : 'it'} may be stale. See Data Quality.</div>`);
-  if (state.rep) banners.push(`<div class="banner">Filtered to <b>${esc(userName(state.rep))}</b>: leads, estimates and wins only. Containers, jobs, crews and hiring always show the whole company.</div>`);
+  if (state.rep) banners.push(`<div class="banner">Filtered to <b>${esc(userName(state.rep))}</b>: leads, estimates, wins and won / pending revenue only. Containers, jobs, crews and hiring always show the whole company.</div>`);
   $('banners').innerHTML = banners.join('');
   const tab = TABS.find(t => t.id === state.tab) || TABS[0];
   try { $('view').innerHTML = `<div role="tabpanel">${tab.render()}</div>`; decorateTiles(); }

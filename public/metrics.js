@@ -702,6 +702,52 @@ export function workflowsSection(snap, { range, now }) {
   };
 }
 
+// ---------- won and pending revenue ----------
+// Won revenue     = opportunities in a "Job Completed" stage (Change Orders: "Completed"), dated by when
+//                   they entered it, so the period filter applies.
+// Pending revenue = opportunities sitting right now in an "Accepted" / "Work In Progress" stage
+//                   (Labor: "Accepted / In Progress"). A current number, not filtered by period.
+// Both cover Demo, Labor, Containers and Change Orders, skip anything marked Lost/Abandoned in GHL,
+// and follow the user filter (opportunity owner, else the contact's owner).
+export const DEFAULT_PENDING_STAGE_NAMES = ['Accepted', 'Work In Progress', 'Accepted / In Progress'];
+const normStage = v => String(v ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+export function pendingStageIdsOf(cfg) {
+  if (Array.isArray(cfg.pendingStageIds)) return new Set(cfg.pendingStageIds);
+  const names = new Set(DEFAULT_PENDING_STAGE_NAMES.map(normStage));
+  return new Set(Object.entries(cfg.stages || {}).filter(([, s]) => names.has(normStage(s.name))).map(([id]) => id));
+}
+export function revenueSection(snap, { range, rep }) {
+  const idx = buildIndex(snap);
+  const tz = idx.tz;
+  const pendingStages = pendingStageIdsOf(idx.cfg);
+  const pipes = [idx.P.demo, idx.P.labor, idx.P.containers, idx.P.changeOrders].filter(Boolean);
+  const dead = o => o.status === 'lost' || o.status === 'abandoned';
+  const mine = idx.opps.filter(o => pipes.includes(o.pipelineId) && !dead(o));
+  const completedDate = o => localDate(o.stageChangedAt || o.statusChangedAt || o.updatedAt, tz);
+  const wonAll = mine.filter(o => idx.jobCompletedStages.has(o.stageId) && inRange(completedDate(o), range));
+  const pendingAll = mine.filter(o => pendingStages.has(o.stageId));
+  const won = wonAll.filter(o => idx.repMatch(o, rep)), pending = pendingAll.filter(o => idx.repMatch(o, rep));
+  const stageName = id => idx.cfg.stages?.[id]?.name || 'Unknown stage';
+  const byPipeline = pipes.map(id => {
+    const w = won.filter(o => o.pipelineId === id), p = pending.filter(o => o.pipelineId === id);
+    const stages = [...groupBy(p, o => o.stageId)].map(([sid, l]) => ({ key: stageName(sid), count: l.length, value: sum(l, o => o.value) }));
+    return { key: idx.serviceName(id), wonCount: w.length, wonValue: sum(w, o => o.value), pendingCount: p.length, pendingValue: sum(p, o => o.value), pendingStages: stages };
+  });
+  // Per user, always for the whole company (the table is how you compare users).
+  const ownerOf = o => o.assignedTo || idx.contacts.get(o.contactId)?.assignedTo || '';
+  const users = new Map();
+  const row = k => users.get(k) || users.set(k, { key: k, wonCount: 0, wonValue: 0, pendingCount: 0, pendingValue: 0 }).get(k);
+  for (const o of wonAll) { const r = row(ownerOf(o)); r.wonCount++; r.wonValue += Number(o.value) || 0; }
+  for (const o of pendingAll) { const r = row(ownerOf(o)); r.pendingCount++; r.pendingValue += Number(o.value) || 0; }
+  const byUser = [...users.values()].sort((a, b) => (b.wonValue + b.pendingValue) - (a.wonValue + a.pendingValue));
+  return {
+    wonValue: sum(won, o => o.value), wonCount: won.length,
+    pendingValue: sum(pending, o => o.value), pendingCount: pending.length,
+    byPipeline, byUser,
+    noPendingStage: pendingStages.size === 0
+  };
+}
+
 // ---------- overview ----------
 export function overview(snap, opts) {
   const leads = leadsSection(snap, opts), est = estimatesSection(snap, opts), cont = containersSection(snap, opts), crews = crewsSection(snap, opts);
